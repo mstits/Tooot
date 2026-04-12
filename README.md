@@ -5,7 +5,6 @@
 
 <img width="2485" height="1219" alt="hero" src="https://github.com/user-attachments/assets/80427647-3422-4508-8ef8-7a42d9aa3eb4" />
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-6.0-orange)
 
