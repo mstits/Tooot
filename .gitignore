@@ -1,0 +1,45 @@
+# Xcode / Swift
+.build/
+.swiftpm/
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+*.xcframework
+DerivedData/
+*.app/
+*.app
+
+# OS X
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Testing / Diagnostic Media
+*.wav
+*.aiff
+*.mp3
+*.m4a
+*.jpg
+*.png
+
+# Diagnostic & Refactor Scripts
+*.py
+waveform_compare/
+
+# Temporary / Session Outputs
+uat_output.txt
+deep_project_session.json
+deep_project_interview.md
+gemini_prompt_*.md
+gemini.md
+refactor.py
+refactor2.py
+fix_*.py
+strip_focus.py
+
+# Internal Project Docs
+AUDIT.md
+HANDOFF.md
+project-manifest.md
+requirements.md
+SESSION_LOG.md

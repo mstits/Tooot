@@ -1,0 +1,29 @@
+{
+  "project": "ToooT_macOS_16",
+  "philosophy": "Computational Malice",
+  "tiers": {
+    "Carbon": [
+      { "name": "High-Voltage Arc", "type": "timbre_transfer", "source": "electromagnetic_interference", "epochs": 5000 },
+      { "name": "Circuit-Bent Genesis", "type": "timbre_transfer", "source": "shorted_logic_gates", "epochs": 5000 },
+      { "name": "Data Corruption", "type": "timbre_transfer", "source": "hard_drive_platter_scrape", "epochs": 8000 },
+      { "name": "Transformer Hum", "type": "timbre_transfer", "source": "60Hz_mains_overload", "epochs": 3000 },
+      { "name": "Cathode Ray", "type": "timbre_transfer", "source": "CRT_flyback_whine", "epochs": 4000 }
+    ],
+    "Biological": [
+      { "name": "Vocal Fry", "type": "timbre_transfer", "source": "sub-harmonic_vocal_cords", "epochs": 6000 },
+      { "name": "Throat Resonances", "type": "timbre_transfer", "source": "tuvan_throat_singing_isolated", "epochs": 7000 },
+      { "name": "Skeletal Percussion", "type": "timbre_transfer", "source": "femur_impacts", "epochs": 4000 },
+      { "name": "Respiration", "type": "timbre_transfer", "source": "bronchial_wheeze", "epochs": 5000 },
+      { "name": "Cardiac Arrhythmia", "type": "timbre_transfer", "source": "irregular_heartbeat_doppler", "epochs": 5000 }
+    ],
+    "Xenomorph": [
+      { "name": "Non-Terrestrial Math", "type": "timbre_transfer", "source": "procedural_fractal_noise", "epochs": 10000 },
+      { "name": "Algorithmic Texture", "type": "timbre_transfer", "source": "cellular_automata_sonification", "epochs": 10000 },
+      { "name": "Void Screech", "type": "timbre_transfer", "source": "vacuum_decay_simulation", "epochs": 12000 },
+      { "name": "Event Horizon", "type": "timbre_transfer", "source": "black_hole_accretion_disk", "epochs": 15000 },
+      { "name": "Quantum Foam", "type": "timbre_transfer", "source": "subatomic_particle_collisions", "epochs": 20000 }
+    ]
+  },
+  "morphing_logic": "Markov Layer cross-fades based on real-time algSeed data.",
+  "target_hardware": "M-Series Neural Engine (ANE)"
+}
