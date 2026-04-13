@@ -7,6 +7,8 @@
 import SwiftUI
 import ToooT_Core
 import ToooT_Plugins
+import AVFoundation
+import ToooT_VST3
 
 @MainActor
 public struct PluginDialogContainer: View {
@@ -42,9 +44,188 @@ public struct PluginDialogContainer: View {
                 SimpleActionDialog(state: state, timeline: timeline, actionType: pluginType)
             case .importMIDI, .importClassicApp, .ioAIFF, .ioWave, .ioXI, .ioPAT, .ioMINs, .ioSys7, .ioQuickTime:
                 IODialog(state: state, timeline: timeline, actionType: pluginType)
+            case .externalInstrument:
+                ExternalInstrumentDialog(state: state, timeline: timeline)
             }
         }
-        .padding().frame(width: 400, height: 300).background(StudioTheme.background)
+        .padding().frame(width: 400, height: 400).background(StudioTheme.background)
+    }
+}
+
+@MainActor
+struct ExternalInstrumentDialog: View {
+    @Bindable var state: PlaybackState
+    let timeline: Timeline?
+    
+    @State private var isLoading = false
+    @State private var vst3Plugins: [String] = []
+    @State private var searchText = ""
+    @State private var filterNI = false
+    
+    var body: some View {
+        let auInstruments = timeline?.hostManager.availablePlugins.filter { $0.audioComponentDescription.componentType == kAudioUnitType_MusicDevice } ?? []
+        let filteredAU = auInstruments.filter { comp in
+            let matchesSearch = searchText.isEmpty || comp.name.localizedCaseInsensitiveContains(searchText) || comp.manufacturerName.localizedCaseInsensitiveContains(searchText)
+            let isNI = comp.manufacturerName.localizedCaseInsensitiveContains("Native Instruments") || comp.name.localizedCaseInsensitiveContains("Kontakt") || comp.name.localizedCaseInsensitiveContains("Massive")
+            return matchesSearch && (!filterNI || isNI)
+        }
+        
+        let filteredVST = vst3Plugins.filter { path in
+            let name = (path as NSString).lastPathComponent
+            let matchesSearch = searchText.isEmpty || name.localizedCaseInsensitiveContains(searchText)
+            let isNI = name.localizedCaseInsensitiveContains("Native Instruments") || name.localizedCaseInsensitiveContains("Kontakt") || name.localizedCaseInsensitiveContains("Massive")
+            return matchesSearch && (!filterNI || isNI)
+        }
+
+        return VStack(spacing: 16) {
+            // Header with Search and Filter
+            VStack(spacing: 8) {
+                HStack {
+                    Image(systemName: "magnifyingglass").foregroundColor(.gray)
+                    TextField("Search instruments...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13, design: .monospaced))
+                    
+                    if !searchText.isEmpty {
+                        Button(action: { searchText = "" }) {
+                            Image(systemName: "xmark.circle.fill").foregroundColor(.gray)
+                        }.buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .background(Color.black.opacity(0.3))
+                .cornerRadius(8)
+                
+                HStack {
+                    FilterChip(label: "ALL", isActive: !filterNI) { filterNI = false }
+                    FilterChip(label: "NATIVE INSTRUMENTS", isActive: filterNI) { filterNI = true }
+                    Spacer()
+                }
+            }
+            
+            ScrollView {
+                VStack(spacing: 12) {
+                    // AUv3 Section
+                    if !filteredAU.isEmpty {
+                        PluginSectionHeader(title: "AUv3 PLUGINS", icon: "apple.logo")
+                        ForEach(filteredAU, id: \.name) { comp in
+                            InstrumentRow(name: comp.name, manufacturer: comp.manufacturerName, type: "AUv3") {
+                                loadAU(comp)
+                            }
+                        }
+                    }
+                    
+                    // VST3 Section
+                    if !filteredVST.isEmpty {
+                        PluginSectionHeader(title: "VST3 PLUGINS (JUCE)", icon: "pianokeys")
+                        ForEach(filteredVST, id: \.self) { path in
+                            InstrumentRow(name: (path as NSString).lastPathComponent, manufacturer: "Steinberg/NI", type: "VST3") {
+                                loadVST3(path)
+                            }
+                        }
+                    }
+                    
+                    if filteredAU.isEmpty && filteredVST.isEmpty {
+                        VStack(spacing: 20) {
+                            Spacer()
+                            Image(systemName: "music.note.list").font(.system(size: 40)).opacity(0.2)
+                            Text(filterNI ? "No Native Instruments found on this system." : "No instruments found matching your criteria.")
+                                .font(.caption).opacity(0.5)
+                            Spacer()
+                        }.frame(height: 200)
+                    }
+                }
+            }
+            .frame(height: 250)
+            
+            if isLoading {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text("Initializing Engine...").font(.system(size: 9, design: .monospaced)).foregroundColor(.gray)
+                }
+            }
+            
+            Text("HOSTING ON CHANNEL \(state.selectedChannel + 1)").font(.system(size: 8, weight: .black)).foregroundColor(.orange.opacity(0.8))
+        }
+        .onAppear {
+            vst3Plugins = JUCEVST3Host.discoverPlugins()
+        }
+    }
+    
+    private func loadAU(_ component: AVAudioUnitComponent) {
+        isLoading = true
+        Task {
+            NotificationCenter.default.post(name: NSNotification.Name("LoadExternalPlugin"), object: (component.audioComponentDescription, state.selectedChannel))
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            isLoading = false
+            state.activePluginDialog = nil
+            state.showStatus("LOADED: \(component.name)")
+        }
+    }
+    
+    private func loadVST3(_ path: String) {
+        isLoading = true
+        Task {
+            NotificationCenter.default.post(name: NSNotification.Name("LoadVST3Plugin"), object: (path, state.selectedChannel))
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            isLoading = false
+            state.activePluginDialog = nil
+            state.showStatus("LOADED VST3: \((path as NSString).lastPathComponent)")
+        }
+    }
+}
+
+struct FilterChip: View {
+    let label: String
+    let isActive: Bool
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            Text(label).font(.system(size: 8, weight: .black))
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(isActive ? Color.purple : Color.white.opacity(0.1))
+                .foregroundColor(isActive ? .white : .gray)
+                .cornerRadius(4)
+        }.buttonStyle(.plain)
+    }
+}
+
+struct PluginSectionHeader: View {
+    let title: String
+    let icon: String
+    var body: some View {
+        HStack {
+            Image(systemName: icon).font(.system(size: 8))
+            Text(title).font(.system(size: 8, weight: .black))
+            Spacer()
+            Rectangle().fill(Color.white.opacity(0.1)).frame(height: 1)
+        }.foregroundColor(.gray).padding(.top, 4)
+    }
+}
+
+struct InstrumentRow: View {
+    let name: String
+    let manufacturer: String
+    let type: String
+    let action: () -> Void
+    @State private var isHovering = false
+    var body: some View {
+        Button(action: action) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).font(.system(size: 11, weight: .bold, design: .monospaced))
+                    Text(manufacturer.uppercased()).font(.system(size: 7, weight: .medium)).opacity(0.6)
+                }
+                Spacer()
+                Text(type).font(.system(size: 7, weight: .black)).padding(4).background(Color.black.opacity(0.4)).cornerRadius(3).opacity(0.8)
+            }
+            .padding(10)
+            .background(isHovering ? Color.purple.opacity(0.2) : Color.white.opacity(0.03))
+            .cornerRadius(6)
+            .overlay(RoundedRectangle(cornerRadius: 6).stroke(isHovering ? Color.purple.opacity(0.5) : Color.clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
     }
 }
 

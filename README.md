@@ -47,15 +47,19 @@ Post-human generative algorithms built directly into the UI:
 - **L-System Arpeggios**: Generate fractal, organic note sequences based on biological growth algorithms.
 - **Synthesis Tiers**: Tweak high-level algorithmic parameters like "Corruption," "Arrhythmia," and "Fractal Dimension" to introduce controlled chaos.
 
-### Professional Mixing & AUv3 Hosting
+### Professional Mixing, AUv3 & VST3 Hosting
 - **Studio Console**: A virtualized, high-performance mixing console with custom `StudioKnob` and `StudioFader` widgets.
-- **AUv3 Plugin Support**: Host external Apple Audio Units on any channel. Presets and opaque plugin states are fully serialized and saved directly into your `.mad` project files.
+- **Pro Instrument Browser**: Unified plugin manager with dedicated filtering for **Native Instruments** (Kontakt, Massive, etc.) and search functionality.
+- **JUCE VST3 Bridge**: Support for Steinberg VST3 plugins via a high-performance Objective-C++ bridging layer.
+- **Sidechain Ducking**: Real-time global signal routing for professional mix "pumping" effects.
+- **Master Safety Limiter**: Hardware-accelerated (vDSP) 1ms attack limiter active by default to prevent digital clipping.
 - **Vectorized Automation**: Draw complex Bezier curves for volume, panning, and pitch.
 
 ### Universal Format Compatibility
-- **Lossless `.mad` Format**: Native chunk-based file format that perfectly preserves all high-resolution DSP, AUv3 states, and automation.
+- **Lossless `.mad` Format**: Native chunk-based file format that perfectly preserves all high-resolution DSP, AUv3/VST3 states, and automation.
 - **Retro Support**: Flawless loading and playback of classic `.mod`, `.xm`, `.it`, and `.s3m` tracker formats.
-- **Video Sync**: Load `.mp4` or `.mov` files to perfectly synchronize your composition to a video timecode for scoring and sound design.
+- **Sidebar Sample Browser**: Integrated filesystem navigator with **Universal Drag & Drop** for samples and project files.
+- **Video Sync**: Load `.mp4` or `.mov` files to perfectly synchronize your composition to a video timecode.
 
 ---
 
@@ -70,8 +74,9 @@ graph TD;
         UI_WB[SwiftUI Workbench]
         UI_Metal[MetalKit 120Hz Grid]
         UI_JIT[ToooTShell JIT Console]
-        UI_Wave[Waveform Forge 2.0]
-        UI_WB --- UI_Metal & UI_JIT & UI_Wave
+        UI_Browser[Sidebar Sample Browser]
+        UI_NI[Pro Instrument Browser]
+        UI_WB --- UI_Metal & UI_JIT & UI_Browser & UI_NI
     end
 
     %% State Layer
@@ -96,14 +101,18 @@ graph TD;
         Audio_RN[AudioRenderNode]
         Audio_Voice[SynthVoice Vectorized Resampler]
         Audio_vDSP[vDSP Summing & PDC]
-        Audio_AUv3[AUv3 Insert Host]
+        Audio_SC[Sidechain Ducking Engine]
+        Audio_Lim[Master Safety Limiter]
+        Audio_AUv3[AUv3 / VST3 Insert Host]
         Audio_Out[AVAudioEngine Bus]
         
         Bridge_Snap -->|Consumed by| Audio_RN
         Audio_RN --> Audio_Voice
         Audio_Voice --> Audio_vDSP
-        Audio_vDSP --> Audio_AUv3
-        Audio_AUv3 --> Audio_Out
+        Audio_vDSP --> Audio_SC
+        Audio_SC --> Audio_AUv3
+        Audio_AUv3 --> Audio_Lim
+        Audio_Lim --> Audio_Out
         Audio_RN -.->|nonisolated polling| Bridge_TL
     end
 
@@ -111,7 +120,9 @@ graph TD;
     subgraph IOLayer [I/O & File Management]
         IO_Bank[UnifiedSampleBank]
         IO_MAD[MADParser / MADWriter]
-        UI_Wave <==>|Offline DSP Undo Buffer| IO_Bank
+        IO_VST[ToooT_VST3 JUCE Bridge]
+        UI_NI <==> IO_VST
+        IO_VST -.-> Audio_AUv3
         IO_Bank -->|Raw PCM Pointer| Audio_Voice
         IO_MAD -.->|Deserializes| State_Seq
     end
@@ -129,6 +140,7 @@ graph TD;
 - **`ToooT_UI`**: The modern, industrial "glassmorphism" SwiftUI frontend. Houses the GPU-accelerated pattern grid, the mixer, the JIT console, and the waveform editor.
 - **`ToooT_IO`**: Custom parsers (`MADParser`, `MADWriter`) providing bit-perfect backwards compatibility.
 - **`ToooT_Plugins`**: The AUv3 hosting layer.
+- **`ToooT_VST3`**: The Objective-C++ JUCE/Steinberg bridge for VST3 plugin hosting.
 
 ---
 

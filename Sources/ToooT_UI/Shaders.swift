@@ -53,6 +53,8 @@ public struct Shaders {
         float2 cellUV;        // [0,1] within the current cell
         float2 screenUV;      // [0,1] across the full view
         uint   instanceID [[flat]];
+        uint   ch         [[flat]];
+        uint   actualRow  [[flat]];
     };
 
     struct PatternScrollUniforms {
@@ -118,27 +120,24 @@ public struct Shaders {
     {
         // ── Decode instance to (channel, visibleRowSlot) ─────────────────────
         uint ch       = instanceID % u.totalChannels;
-        uint rowSlot  = instanceID / u.totalChannels;   // 0 .. visibleRows (inclusive — extra slot for seamless wrap)
+        uint rowSlot  = instanceID / u.totalChannels;
 
         // ── Compute which actual pattern row this slot maps to ───────────────
-        // fractionalRowOffset ∈ [0,1): sub-row scroll.
-        // SIGN IS CRITICAL: subtracting frac scrolls the grid UPWARD as frac
-        // increases — new rows arrive from below, old rows depart off the top.
-        // (Adding frac was the original bug: it scrolled DOWN, creating a
-        // sawtooth snap at every row boundary that produced the 3Hz oscillation.)
         float slotWithFrac = float(rowSlot) - u.fractionalRowOffset;
+        
+        float engineRowF = float(u.currentEngineRow)
+                         - float(u.visibleRows / 2)
+                         + float(rowSlot);
+        uint patRow = uint(round(engineRowF)) & 63;
 
         // ── Build the NDC quad for this cell ─────────────────────────────────
-        // NDC: (-1,-1) = bottom-left, (1,1) = top-right.
         float2 quadPos[4] = {
             float2(0.0, 0.0), float2(1.0, 0.0),
             float2(0.0, 1.0), float2(1.0, 1.0)
         };
-        float2 local = quadPos[vid];   // [0,1] within the cell
+        float2 local = quadPos[vid];
 
-        // Cell origin in NDC space
         float ndcLeft = -1.0 + (float(ch) - u.channelOffset) * u.cellWidth;
-        // Flip Y: row 0 at top, visibleRows-1 at bottom.
         float ndcTop  =  1.0 - slotWithFrac * u.cellHeight;
 
         float2 ndcPos = float2(ndcLeft + local.x * u.cellWidth,
@@ -147,25 +146,21 @@ public struct Shaders {
         GridVertexOut out;
         out.position  = float4(ndcPos, 0.0, 1.0);
         out.cellUV    = local;
-        // screenUV for the full-screen effects (playhead etc.)
         out.screenUV  = float2((ndcPos.x + 1.0) * 0.5,
                                (1.0 - ndcPos.y) * 0.5);
         out.instanceID = instanceID;
+        out.ch         = ch;
+        out.actualRow  = patRow;
         return out;
     }
 
     // ── Helper: smooth border mask ───────────────────────────────────────────
-    // Returns 1.0 on the edge (within `t` UV units), 0.0 in the interior.
     static float borderMask(float2 uv, float t) {
         float2 edge = step(uv, float2(t)) + step(1.0 - t, uv);
         return clamp(edge.x + edge.y, 0.0, 1.0);
     }
 
     // ── Helper: note-type colour ─────────────────────────────────────────────
-    // note 1-35   → bass range  → teal
-    // note 36-59  → mid range   → cyan-blue
-    // note 60-83  → treble      → magenta-pink
-    // note 84+    → ultra high  → gold
     static float3 noteColor(uint note) {
         if (note == 0)   return float3(0.0);
         if (note < 36)   return float3(0.0, 0.9, 0.7);
@@ -179,23 +174,14 @@ public struct Shaders {
         constant PatternScrollUniforms& u      [[buffer(0)]],
         constant uint*              cellData   [[buffer(1)]])
     {
-        uint ch      = in.instanceID % u.totalChannels;
-        uint rowSlot = in.instanceID / u.totalChannels;
-
-        // Actual pattern row (integer, for data lookup).
-        // fractionalRowOffset must NOT appear here — the slot's row DATA is fixed
-        // for the entire duration of a row; only its NDC POSITION moves.
-        // Including frac here caused two adjacent rows' data to blend/straddle,
-        // producing a second visual artifact on top of the vertex sign bug.
-        float engineRowF = float(u.currentEngineRow)
-                         - float(u.visibleRows / 2)
-                         + float(rowSlot);
-        int   patRow     = (int(round(engineRowF))) & 63;
+        uint ch      = in.ch;
+        uint patRow  = in.actualRow;
+        
+        bool isSelectedChannel = (ch == u.cursorChannel);
+        float ghostDim = isSelectedChannel ? 1.0 : 0.25;
 
         // ── Optimized Background ─────────────────────────────────────────────
         float3 bg = mix(float3(0.05, 0.05, 0.07), float3(0.07, 0.07, 0.10), float(patRow % 4 == 0));
-
-        // Separators using smoothstep for cleaner 1px lines
         float sep = step(0.97, in.cellUV.x);
         float rowSep = step(0.96, in.cellUV.y);
         bg = mix(bg, float3(0.02, 0.02, 0.03), max(sep, rowSep));
@@ -204,41 +190,34 @@ public struct Shaders {
 
         // ── Optimized Data Fetch ─────────────────────────────────────────────
         uint packed = cellData[uint(patRow) * u.totalChannels + ch];
-        if (packed != 0) {
+        if ((packed & 0x80000000) != 0) {
             uint note       = (packed >>  0) & 0xFF;
             uint instrument = (packed >>  8) & 0xFF;
             uint effect     = (packed >> 16) & 0xFF;
 
-            // ── Note pill (Branchless-ish) ───────────────────────────────────
             if (note != 0) {
                 bool inPill = (in.cellUV.x >= 0.04 && in.cellUV.x <= 0.65 &&
                                in.cellUV.y >= 0.15 && in.cellUV.y <= 0.85);
                 if (inPill) {
                     float3 nc = noteColor(note);
-                    color = float4(nc * (0.7 + 0.3 * (1.0 - (in.cellUV.x - 0.04)/0.61)), 1.0);
+                    color = float4(nc * ghostDim * (0.7 + 0.3 * (1.0 - (in.cellUV.x - 0.04)/0.61)), 1.0);
                 }
             }
 
-            // ── Effect dot ───────────────────────────────────────────────────
             if (effect != 0) {
                 float2 dotUV = float2((in.cellUV.x - 0.70) / 0.25, (in.cellUV.y - 0.08) / 0.30);
                 float  dotR  = length(dotUV - 0.5) * 2.0;
-                color = mix(color, float4(1.0, 0.7, 0.1, 1.0), (1.0 - smoothstep(0.6, 1.0, dotR)) * 0.9);
+                color = mix(color, float4(float3(1.0, 0.7, 0.1) * ghostDim, 1.0), (1.0 - smoothstep(0.6, 1.0, dotR)) * 0.9);
             }
 
-            // ── Instrument tint ──────────────────────────────────────────────
             if (instrument != 0 && note == 0) {
                 float hue = fmod(float(instrument) * 0.137, 1.0);
                 float3 p = abs(fract(float3(hue) + float3(1.0, 2.0/3.0, 1.0/3.0)) * 6.0 - 3.0);
-                color.rgb += 0.036 * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), 0.3);
+                color.rgb += 0.036 * ghostDim * mix(float3(1.0), clamp(p - 1.0, 0.0, 1.0), 0.3);
             }
         }
 
         // ── Playhead highlight ───────────────────────────────────────────────
-        // Use screen-UV Y distance from 0.5 (physical center of the view).
-        // This is independent of frac/slot math — the highlight is always at the
-        // exact center of the screen regardless of sub-row scroll position.
-        // The SwiftUI PlayheadOverlayView draws the crisp indicator line on top.
         float distFromCenter = abs(in.screenUV.y - 0.5) * float(u.visibleRows);
         color = mix(color, float4(0.0, 0.55, 1.0, 1.0), (1.0 - smoothstep(0.0, 0.7, distFromCenter)) * 0.28);
 

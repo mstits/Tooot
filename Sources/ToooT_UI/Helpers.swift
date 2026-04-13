@@ -35,6 +35,7 @@ public enum PluginType: String, Identifiable, CaseIterable {
     case normalize, invert, silence, backwards, smooth
     case importMIDI, importClassicApp
     case ioAIFF, ioWave, ioXI, ioPAT, ioMINs, ioSys7, ioQuickTime
+    case externalInstrument
     public var id: String { rawValue }
 }
 

@@ -33,6 +33,10 @@ public struct EngineSharedState {
     
     public var isStereoWideEnabled: Int32 = 0
     public var isReverbEnabled: Int32 = 0
+    public var isMetronomeEnabled: Int32 = 0
+    public var isMasterLimiterEnabled: Int32 = 1 // On by default for safety
+    public var sidechainChannel: Int32 = -1 // -1 = disabled, 0...255 = source channel
+    public var sidechainAmount: Float = 0.0 // 0.0 = none, 1.0 = full duck
     public var bpm: Int32 = 125
     public var ticksPerRow: Int32 = 6
     /// Algorithmic seed — written by the audio engine each row, read atomically by synthesis

@@ -21,6 +21,7 @@ import os.log
 import ToooT_Core
 import ToooT_Plugins
 import ToooT_IO
+import ToooT_VST3
 
 private let hostLog = Logger(subsystem: "com.apple.ProjectToooT", category: "AudioHost")
 
@@ -33,10 +34,11 @@ private final class RenderBlockWrapper: @unchecked Sendable {
     let reverbBlock:    AUInternalRenderBlock?
     let statePtr:       UnsafeMutablePointer<EngineSharedState>
 
-    // Per-channel AUv3 insert chains. 
+    // Per-channel AUv3 insert chains and instruments. 
     // We use a fixed-size array of pointers to blocks to ensure RT-safety.
-    // kMaxChannels channels, max 4 plugins per channel.
+    // kMaxChannels channels, max 4 plugins per channel + 1 instrument.
     nonisolated(unsafe) let pluginBlocks: UnsafeMutablePointer<AUInternalRenderBlock?>
+    nonisolated(unsafe) let instrumentBlocks: UnsafeMutablePointer<AUInternalRenderBlock?>
     nonisolated(unsafe) let pluginCounts: UnsafeMutablePointer<Int32>
 
     init(engineBlock:    @escaping AUInternalRenderBlock,
@@ -50,12 +52,15 @@ private final class RenderBlockWrapper: @unchecked Sendable {
         
         self.pluginBlocks = .allocate(capacity: kMaxChannels * 4)
         self.pluginBlocks.initialize(repeating: nil, count: kMaxChannels * 4)
+        self.instrumentBlocks = .allocate(capacity: kMaxChannels)
+        self.instrumentBlocks.initialize(repeating: nil, count: kMaxChannels)
         self.pluginCounts = .allocate(capacity: kMaxChannels)
         self.pluginCounts.initialize(repeating: 0, count: kMaxChannels)
     }
     
     deinit {
         pluginBlocks.deallocate()
+        instrumentBlocks.deallocate()
         pluginCounts.deallocate()
     }
 }
@@ -74,8 +79,13 @@ private func coreAudioRenderCallback(
     // 1. Tracker engine (now via AudioRenderNode — lock-free snapshot, Float-only pipeline)
     _ = wrapper.engineBlock(ioActionFlags, inTimeStamp, inNumberFrames, 0, ioData, nil, nil)
 
-    // 2. Per-channel AUv3 insert chains (RT-safe loop)
+    // 2. Per-channel AUv3 chains (RT-safe loop)
     for ch in 0..<kMaxChannels {
+        // If an external instrument is loaded for this channel, render it.
+        if let instBlock = wrapper.instrumentBlocks[ch] {
+            _ = instBlock(ioActionFlags, inTimeStamp, inNumberFrames, 0, ioData, nil, nil)
+        }
+        
         let count = wrapper.pluginCounts[ch]
         for p in 0..<Int(count) {
             if let block = wrapper.pluginBlocks[ch * 4 + p] {
@@ -115,8 +125,24 @@ public final class AudioHost {
     private var reverbAU: AUAudioUnit?
     // Keep AUv3 insert plugins alive. Key is "channelIndex_pluginIndex" or similar.
     private var insertPlugins: [String: AUAudioUnit] = [:]
+    // Keep VST3 plugins alive. Key is "channelIndex_vst3".
+    private var vst3Plugins: [String: JUCEVST3Host] = [:]
 
-    public init() {}
+    public init() {
+        NotificationCenter.default.addObserver(forName: NSNotification.Name("LoadExternalPlugin"), object: nil, queue: .main) { [weak self] note in
+            guard let self = self, let data = note.object as? (AudioComponentDescription, Int) else { return }
+            Task {
+                try? await self.loadPlugin(component: data.0, for: data.1)
+            }
+        }
+        
+        NotificationCenter.default.addObserver(forName: NSNotification.Name("LoadVST3Plugin"), object: nil, queue: .main) { [weak self] note in
+            guard let self = self, let data = note.object as? (String, Int) else { return }
+            Task { @MainActor in
+                self.loadVST3Plugin(path: data.0, for: data.1)
+            }
+        }
+    }
 
     // MARK: Setup
 
@@ -319,17 +345,47 @@ public final class AudioHost {
     // MARK: AUv3 plugin hosting
 
     public func loadPlugin(component: AudioComponentDescription, for channel: Int) async throws {
-        let au = try AUAudioUnit(componentDescription: component, options: [])
+        let au = try await AUAudioUnit.instantiate(with: component, options: [])
         try au.allocateRenderResources()
-        let pluginID = "\(channel)_\(insertPlugins.count)"
+        
+        let isInstrument = component.componentType == kAudioUnitType_MusicDevice
+        let pluginID = isInstrument ? "\(channel)_inst" : "\(channel)_\(insertPlugins.count)"
         insertPlugins[pluginID] = au
         
         if let wrapper = renderBlockWrapper, channel < kMaxChannels {
-            let currentCount = Int(wrapper.pluginCounts[channel])
-            if currentCount < 4 {
-                wrapper.pluginBlocks[channel * 4 + currentCount] = au.internalRenderBlock
-                wrapper.pluginCounts[channel] = Int32(currentCount + 1)
+            if isInstrument {
+                wrapper.instrumentBlocks[channel] = au.internalRenderBlock
+            } else {
+                let currentCount = Int(wrapper.pluginCounts[channel])
+                if currentCount < 4 {
+                    wrapper.pluginBlocks[channel * 4 + currentCount] = au.internalRenderBlock
+                    wrapper.pluginCounts[channel] = Int32(currentCount + 1)
+                }
             }
+        }
+    }
+
+    public func loadVST3Plugin(path: String, for channel: Int) {
+        let vst3 = JUCEVST3Host()
+        do {
+            try vst3.loadPlugin(atPath: path)
+            let pluginID = "\(channel)_vst3"
+            vst3Plugins[pluginID] = vst3
+            
+            if let wrapper = renderBlockWrapper, channel < kMaxChannels {
+                let block: AUInternalRenderBlock = { actionFlags, timestamp, frameCount, outputBusNumber, outputData, renderEvent, pullInputBlock in
+                    let bufList = UnsafeMutableAudioBufferListPointer(outputData)
+                    if bufList.count >= 2,
+                       let dstL = bufList[0].mData?.assumingMemoryBound(to: Float.self),
+                       let dstR = bufList[1].mData?.assumingMemoryBound(to: Float.self) {
+                        vst3.processAudioBufferL(dstL, bufferR: dstR, frames: Int32(frameCount))
+                    }
+                    return noErr
+                }
+                wrapper.instrumentBlocks[channel] = block
+            }
+        } catch {
+            hostLog.error("Failed to load VST3 plugin at path \(path)")
         }
     }
 

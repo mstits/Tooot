@@ -111,6 +111,12 @@ public final class RenderResources: @unchecked Sendable {
     public var baseTicksPerRow:    Int32 = 0   // saved value before EEx expands ticksPerRow
     public var currentRowIndex:    Int = 0
     public let maxFrames: Int
+    
+    // Metronome and Limiter state
+    public var metronomeAmplitude: Float = 0.0
+    public var metronomePhase:     Float = 0.0
+    public var limiterGain:        Float = 1.0
+    public var sidechainPeak:      Float = 0.0
 
     public init(maxFrames: Int = 4096) {
         self.maxFrames = maxFrames
@@ -528,6 +534,13 @@ public final class AudioRenderNode: Sendable {
                     state.pointee.samplesProcessed = (state.pointee.samplesProcessed + 1) % 1000000
 
                     AudioRenderNode.processTickSequencer(snap: snap, state: state, res: res, currentTick: currentTick, wrapOnEnd: true)
+                    
+                    // Metronome trigger: Trigger on tick 0 of every row if enabled
+                    if state.pointee.isMetronomeEnabled != 0 && currentTick == 0 {
+                        res.metronomeAmplitude = 0.3
+                        // Higher pitch for the start of pattern (order progression)
+                        res.metronomePhase = state.pointee.currentEngineRow == 0 ? 1600.0 : 800.0
+                    }
 
                     let spt = Double(44100 * 2.5) / Double(max(32, state.pointee.bpm))
                     let tprTick = max(1, Int(state.pointee.ticksPerRow)); let withinRowTick = Float(currentTick) / Float(tprTick)
@@ -543,6 +556,9 @@ public final class AudioRenderNode: Sendable {
                 let samplesLeft = Int(frames) - samplesProcessedInBlock
                 let toProcess   = min(samplesLeft, tickRemain)
                 if toProcess > 0 {
+                    let scSource = state.pointee.sidechainChannel
+                    let scAmount = state.pointee.sidechainAmount
+                    
                     for idx in 0..<res.activeChannelCount {
                         let i = res.activeChannelIndices[idx]
                         let vp = res.voices.advanced(by: i)
@@ -551,6 +567,13 @@ public final class AudioRenderNode: Sendable {
                         vDSP_vclr(res.scratchR, 1, vDSP_Length(toProcess))
                         vDSP_vclr(res.scratchMono, 1, vDSP_Length(toProcess))
                         vp.pointee.process(bufferL: res.scratchL, bufferR: res.scratchR, scratchBuffer: res.interpScratch, monoBuffer: res.scratchMono, positionsScratch: res.positionsScratch, sampleBank: bank, count: toProcess, sampleRate: 44100.0)
+                        
+                        // Track sidechain source peak
+                        if Int32(i) == scSource {
+                            var p: Float = 0
+                            vDSP_maxmgv(res.scratchL, 1, &p, vDSP_Length(toProcess))
+                            res.sidechainPeak = max(res.sidechainPeak, p)
+                        }
                         
                         // PDC: Apply per-channel delay
                         let lat = res.channelLatencies[i]
@@ -572,9 +595,31 @@ public final class AudioRenderNode: Sendable {
                         
                         if i < 32 { node.spatialPush?(i, res.scratchMono, toProcess) }
                         var vol = res.channelVolumes[i]
+                        
+                        // If this is NOT the source, apply ducking
+                        if scSource >= 0 && Int32(i) != scSource && scAmount > 0 {
+                            let duck = 1.0 - (res.sidechainPeak * scAmount)
+                            vol *= max(0.05, duck) // Clamp to -26dB floor
+                        }
+                        
                         vDSP_vsma(res.scratchL, 1, &vol, res.sumL.advanced(by: samplesProcessedInBlock), 1, res.sumL.advanced(by: samplesProcessedInBlock), 1, vDSP_Length(toProcess))
                         vDSP_vsma(res.scratchR, 1, &vol, res.sumR.advanced(by: samplesProcessedInBlock), 1, res.sumR.advanced(by: samplesProcessedInBlock), 1, vDSP_Length(toProcess))
                     }
+                    
+                    // Release sidechain peak slowly
+                    res.sidechainPeak *= 0.999
+                    
+                    // Sum Metronome
+                    if res.metronomeAmplitude > 0.001 {
+                        for j in 0..<toProcess {
+                            let val = sinf(res.metronomePhase * 0.01) * res.metronomeAmplitude
+                            res.sumL[samplesProcessedInBlock + j] += val
+                            res.sumR[samplesProcessedInBlock + j] += val
+                            res.metronomePhase += 1.0
+                            res.metronomeAmplitude *= 0.9992 // Decay
+                        }
+                    }
+                    
                     samplesProcessedInBlock += toProcess
                     tickRemain              -= toProcess
                 }
@@ -584,20 +629,38 @@ public final class AudioRenderNode: Sendable {
             // activeChannelCount is already maintained by processTickSequencer — no need
             // to iterate all kMaxChannels here.
             state.pointee.activeVoices = Int32(res.activeChannelCount)
+var masterVol = Float(state.pointee.masterVolume) * 0.5
+vDSP_vsmul(res.sumL, 1, &masterVol, res.sumL, 1, vDSP_Length(frames))
+vDSP_vsmul(res.sumR, 1, &masterVol, res.sumR, 1, vDSP_Length(frames))
 
-            var masterVol = Float(state.pointee.masterVolume) * 0.5
-            vDSP_vsmul(res.sumL, 1, &masterVol, res.sumL, 1, vDSP_Length(frames))
-            vDSP_vsmul(res.sumR, 1, &masterVol, res.sumR, 1, vDSP_Length(frames))
+// Master Safety Limiter (1ms attack, 100ms release approximation)
+if state.pointee.isMasterLimiterEnabled != 0 {
+    let release: Float = 0.9999 // Slow release
+    let attack:  Float = 0.1    // Fast attack
+    for i in 0..<Int(frames) {
+        let peak = max(abs(res.sumL[i]), abs(res.sumR[i]))
+        let targetGain: Float = peak > 1.0 ? 1.0 / peak : 1.0
+        if targetGain < res.limiterGain {
+            res.limiterGain += (targetGain - res.limiterGain) * attack
+        } else {
+            res.limiterGain += (targetGain - res.limiterGain) * (1.0 - release)
+        }
+        res.sumL[i] *= res.limiterGain
+        res.sumR[i] *= res.limiterGain
+    }
+} else {
+    // Fallback to soft clipping if limiter is off
+    for i in 0..<Int(frames) {
+        res.sumL[i] = tanhf(res.sumL[i])
+        res.sumR[i] = tanhf(res.sumR[i])
+    }
+}
 
-            for i in 0..<Int(frames) {
-                res.sumL[i] = tanhf(res.sumL[i])
-                res.sumR[i] = tanhf(res.sumR[i])
-            }
-
-            var peakL: Float = 0, peakR: Float = 0
-            vDSP_maxmgv(res.sumL, 1, &peakL, vDSP_Length(frames))
-            vDSP_maxmgv(res.sumR, 1, &peakR, vDSP_Length(frames))
-            state.pointee.peakLevel = max(peakL, peakR)
+var peakL: Float = 0
+vDSP_maxmgv(res.sumL, 1, &peakL, vDSP_Length(frames))
+var peakR: Float = 0
+vDSP_maxmgv(res.sumR, 1, &peakR, vDSP_Length(frames))
+state.pointee.peakLevel = max(peakL, peakR)
 
             let bufList = UnsafeMutableAudioBufferListPointer(outputData)
             if let dstL = bufList[0].mData?.assumingMemoryBound(to: Float.self), let dstR = bufList[1].mData?.assumingMemoryBound(to: Float.self) {

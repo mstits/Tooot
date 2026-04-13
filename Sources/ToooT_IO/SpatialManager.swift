@@ -69,10 +69,14 @@ public final class SpatialManager: @unchecked Sendable {
         
         // 3. Register Asset
         let assetIdentifier = "event-\(channel)"
-        try? engine.assetRegistry.registerSoundEventAsset(
-            rootNode: streamNodeDefinition,
-            identifier: assetIdentifier
-        )
+        do {
+            try engine.assetRegistry.registerSoundEventAsset(
+                rootNode: streamNodeDefinition,
+                identifier: assetIdentifier
+            )
+        } catch {
+            print("Failed to register PHASE sound event asset: \(error)")
+        }
         
         // 4. Mixer Parameters
         let mixerParameters = PHASEMixerParameters()
@@ -102,7 +106,7 @@ public final class SpatialManager: @unchecked Sendable {
                 bufferPools[channel] = pool
                 poolIndices[channel] = 0
             }
-            try? soundEvent.start()
+            soundEvent.start()
         }
     }
     

@@ -18,9 +18,9 @@ public final class AUv3HostManager: @unchecked Sendable {
         discoverPlugins()
     }
     
-    /// Discovers external Audio Units
+    /// Discovers external Audio Units (Effects and Instruments)
     public func discoverPlugins() {
-        let desc = AudioComponentDescription(
+        let effectDesc = AudioComponentDescription(
             componentType: kAudioUnitType_Effect,
             componentSubType: 0,
             componentManufacturer: 0,
@@ -28,7 +28,16 @@ public final class AUv3HostManager: @unchecked Sendable {
             componentFlagsMask: 0
         )
         
-        self.availablePlugins = AVAudioUnitComponentManager.shared().components(matching: desc)
+        let instrumentDesc = AudioComponentDescription(
+            componentType: kAudioUnitType_MusicDevice,
+            componentSubType: 0,
+            componentManufacturer: 0,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+        
+        let manager = AVAudioUnitComponentManager.shared()
+        self.availablePlugins = manager.components(matching: effectDesc) + manager.components(matching: instrumentDesc)
     }
     
     /// Loads an external Audio Unit into the hosting layer

@@ -34,9 +34,11 @@ public final class PlaybackState: @unchecked Sendable {
     
     public var selectedInstrument: Int = 1
     public var activeTab: WorkbenchTab = .dashboard
-    public enum InspectorMode { case instrument, channel }; public var inspectorMode: InspectorMode = .instrument
+    public enum InspectorMode { case instrument, channel, browser }; public var inspectorMode: InspectorMode = .instrument
     public func selectInstrument(_ id: Int) { selectedInstrument = id; inspectorMode = .instrument }
     public func selectChannel(_ id: Int) { selectedChannel = id; inspectorMode = .channel }
+    
+    public var browserPath: URL = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first ?? URL(fileURLWithPath: "/")
     
     public var horizontalScrollX: Float = 0.0; public var xZoom: CGFloat = 1.0; public var draggedPointIndex: Int? = nil
     public var instruments: [Int: Instrument] = [:] { didSet { for (id, inst) in instruments { if id >= 0 && id < 256 { instrumentBank[id] = inst } } } }
@@ -47,6 +49,8 @@ public final class PlaybackState: @unchecked Sendable {
     public var isRecording: Bool = false; public var recordedSamplesL: [Float] = []; public var recordedSamplesR: [Float] = []
     
     public var masterVolume: Double = 0.8; public var isStereoWideEnabled: Bool = false; public var isReverbEnabled: Bool = false
+    public var isMetronomeEnabled: Bool = false; public var isMasterLimiterEnabled: Bool = true
+    public var sidechainChannel: Int = -1; public var sidechainAmount: Float = 0.0
     public var bpm: Int = 125; public var ticksPerRow: Int = 6; public var activeTier: SynthesisTier = .carbon
     
     public var carbonCorruption: Float = 0.0

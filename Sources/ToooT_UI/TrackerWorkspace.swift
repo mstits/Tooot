@@ -10,6 +10,7 @@ import ToooT_IO
 import AVFoundation
 import AVKit
 import UniformTypeIdentifiers
+import Combine
 
 // MARK: - Main Tracker Workspace
 
@@ -19,6 +20,7 @@ public struct TrackerWorkspace: View {
     let timeline: Timeline?
     
     @State private var isSidebarExpanded: Bool = true
+    @State private var isDropHovering: Bool = false
 
     public init(state: PlaybackState, host: AudioHost? = nil, timeline: Timeline? = nil) {
         self.state = state
@@ -42,7 +44,27 @@ public struct TrackerWorkspace: View {
             }
         }
         .background(StudioTheme.background)
+        .overlay(
+            RoundedRectangle(cornerRadius: 0)
+                .stroke(StudioTheme.accent, lineWidth: isDropHovering ? 4 : 0)
+                .allowsHitTesting(false)
+        )
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: isSidebarExpanded)
+        .onDrop(of: [.fileURL], isTargeted: $isDropHovering) { providers in
+            guard let provider = providers.first else { return false }
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url = url else { return }
+                let ext = url.pathExtension.lowercased()
+                DispatchQueue.main.async {
+                    if ["mod", "mad", "xm", "it", "s3m"].contains(ext) {
+                        NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url)
+                    } else if ["wav", "aiff", "aif", "mp3", "flac"].contains(ext) {
+                        NotificationCenter.default.post(name: NSNotification.Name("LoadInstrumentFile"), object: url)
+                    }
+                }
+            }
+            return true
+        }
     }
 
     private var topToolbar: some View {
@@ -55,13 +77,21 @@ public struct TrackerWorkspace: View {
             HStack(spacing: 12) {
                 Button(action: { 
                     let p = NSOpenPanel()
-                    p.allowedFileTypes = ["mod", "mad", "madk", "madg", "xm", "it", "s3m"]
+                    p.allowedContentTypes = [
+                        UTType(filenameExtension: "mod")!,
+                        UTType(filenameExtension: "mad")!,
+                        UTType(filenameExtension: "madk")!,
+                        UTType(filenameExtension: "madg")!,
+                        UTType(filenameExtension: "xm")!,
+                        UTType(filenameExtension: "it")!,
+                        UTType(filenameExtension: "s3m")!
+                    ]
                     p.title = "Open Tracker File"
                     if p.runModal() == .OK, let u = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: u) } 
                 }) {                    Image(systemName: "folder.badge.plus").font(.system(size: 14)).foregroundColor(.gray)
                 }.buttonStyle(.plain)
                 Button(action: { 
-                    let p = NSSavePanel(); p.allowedContentTypes = [UTType(exportedAs: "com.apple.mad") ?? .data]; p.nameFieldStringValue = state.songTitle
+                    let p = NSSavePanel(); p.allowedContentTypes = [UTType(exportedAs: "com.apple.mad")]; p.nameFieldStringValue = state.songTitle
                     if p.runModal() == .OK, let u = p.url { 
                         let states = host?.getPluginStates() ?? [:]
                         Task { @MainActor in 
@@ -177,6 +207,21 @@ struct TransportView: View {
             Text("ORD \(String(format: "%02d", state.currentOrder))").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundColor(.gray)
             Text("PAT \(String(format: "%02d", state.currentPattern))").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundColor(.gray)
             Text("ROW \(String(format: "%02d", state.currentUIRow))").font(.system(size: 9, weight: .bold, design: .monospaced)).foregroundColor(.gray.opacity(0.6))
+            
+            Divider().frame(height: 16)
+            
+            // Metronome & Limiter toggles
+            HStack(spacing: 12) {
+                Button(action: { state.isMetronomeEnabled.toggle() }) {
+                    Image(systemName: "metronome").font(.system(size: 12))
+                        .foregroundColor(state.isMetronomeEnabled ? .purple : .gray.opacity(0.4))
+                }.buttonStyle(.plain).help("Toggle Metronome")
+                
+                Button(action: { state.isMasterLimiterEnabled.toggle() }) {
+                    Image(systemName: "bolt.shield.fill").font(.system(size: 12))
+                        .foregroundColor(state.isMasterLimiterEnabled ? .orange : .gray.opacity(0.4))
+                }.buttonStyle(.plain).help("Toggle Master Safety Limiter")
+            }
         }
     }
 }
@@ -199,8 +244,62 @@ public struct DashboardView: View {
                 }
                 HStack(spacing: 20) {
                     WelcomeButton(label: "NEW PROJECT", systemImage: "plus.square.fill", color: .blue) { NotificationCenter.default.post(name: NSNotification.Name("NewTrackerDocument"), object: nil) }
-                    WelcomeButton(label: "LOAD MOD/MAD/XM", systemImage: "folder.fill", color: .green) { let p = NSOpenPanel(); p.allowedFileTypes = ["mod", "mad", "madk", "madg", "xm", "it", "s3m"]; p.title = "Open Tracker File"; if p.runModal() == .OK, let url = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url) } }
+                    WelcomeButton(label: "LOAD MOD/MAD/XM", systemImage: "folder.fill", color: .green) { 
+                        let p = NSOpenPanel()
+                        p.allowedContentTypes = [
+                            UTType(filenameExtension: "mod")!,
+                            UTType(filenameExtension: "mad")!,
+                            UTType(filenameExtension: "madk")!,
+                            UTType(filenameExtension: "madg")!,
+                            UTType(filenameExtension: "xm")!,
+                            UTType(filenameExtension: "it")!,
+                            UTType(filenameExtension: "s3m")!
+                        ]
+                        p.title = "Open Tracker File"; 
+                        if p.runModal() == .OK, let url = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url) } 
+                    }
                 }
+                
+                VStack(spacing: 12) {
+                    Text("GLOBAL SIGNAL ROUTING").font(.system(size: 8, weight: .black)).foregroundColor(.gray)
+                    HStack(spacing: 24) {
+                        SidechainControl(state: state)
+                    }
+                    .padding(20)
+                    .background(Color.black.opacity(0.3))
+                    .cornerRadius(12)
+                }
+            }
+        }
+    }
+}
+
+struct SidechainControl: View {
+    @Bindable var state: PlaybackState
+    var body: some View {
+        HStack(spacing: 20) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("SIDECHAIN SOURCE").font(.system(size: 7, weight: .bold)).foregroundColor(.purple)
+                Picker("", selection: $state.sidechainChannel) {
+                    Text("DISABLED").tag(-1)
+                    ForEach(0..<min(32, kMaxChannels), id: \.self) { i in
+                        Text("CHAN \(i + 1)").tag(i)
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 100)
+            }
+            
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("DUCK AMOUNT").font(.system(size: 7, weight: .bold)).foregroundColor(.purple)
+                    Spacer()
+                    Text("\(Int(state.sidechainAmount * 100))%").font(.system(size: 7, design: .monospaced)).foregroundColor(.gray)
+                }
+                Slider(value: $state.sidechainAmount, in: 0...1.0)
+                    .controlSize(.mini)
+                    .frame(width: 120)
             }
         }
     }
@@ -223,29 +322,43 @@ struct StudioInspector: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                InspectorTab(label: "INSTRUMENTS", mode: .instrument, current: Binding(get: { state.inspectorMode }, set: { state.inspectorMode = $0 }))
-                InspectorTab(label: "CHANNEL \(state.selectedChannel + 1)", mode: .channel, current: Binding(get: { state.inspectorMode }, set: { state.inspectorMode = $0 }))
+                InspectorTab(label: "INST", mode: .instrument, current: Binding(get: { state.inspectorMode }, set: { state.inspectorMode = $0 }))
+                InspectorTab(label: "CHAN \(state.selectedChannel + 1)", mode: .channel, current: Binding(get: { state.inspectorMode }, set: { state.inspectorMode = $0 }))
+                InspectorTab(label: "BROWSER", mode: .browser, current: Binding(get: { state.inspectorMode }, set: { state.inspectorMode = $0 }))
             }.background(Color.black.opacity(0.3))
             Divider().background(Color.white.opacity(0.1))
-            if state.inspectorMode == .instrument {
-                InstrumentListView(state: state)
-            } else {
-                ChannelInspectorView(state: state)
+            
+            Group {
+                switch state.inspectorMode {
+                case .instrument: InstrumentListView(state: state)
+                case .channel:    ChannelInspectorView(state: state)
+                case .browser:    SampleBrowserView(state: state)
+                }
             }
+            
             Spacer()
-            if state.inspectorMode == .instrument {
-                VStack(spacing: 15) {
-                    Divider().background(Color.white.opacity(0.1))
+            
+            VStack(spacing: 0) {
+                Divider().background(Color.white.opacity(0.1))
+                if state.inspectorMode == .instrument {
                     Button(action: { WaveformWindowManager.show(state: state, timeline: timeline, host: host) }) {
                         Label("OPEN WAVEFORM EDITOR", systemImage: "waveform").font(.system(size: 9, weight: .black))
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(StudioTheme.accent)
                     .padding(20)
-                }.background(StudioTheme.glassPanel())
-            } else {
-                ChannelQuickControlsView(state: state)
-            }
+                } else if state.inspectorMode == .channel {
+                    ChannelQuickControlsView(state: state)
+                } else {
+                    // Browser Quick Actions
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("QUICK ACTIONS").font(.system(size: 7, weight: .black)).foregroundColor(.gray)
+                        Button(action: { let p = NSOpenPanel(); p.canChooseDirectories = true; p.canChooseFiles = false; if p.runModal() == .OK, let u = p.url { state.browserPath = u } }) {
+                            Label("CHANGE ROOT", systemImage: "folder.fill").font(.system(size: 8, weight: .bold))
+                        }.buttonStyle(.bordered).controlSize(.small)
+                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }.background(StudioTheme.glassPanel())
         }
     }
 }
@@ -370,7 +483,12 @@ public struct SampleEditorView: View {
     @State private var zoomLevel: Double = 1.0; public init(sampleBank: UnifiedSampleBank? = nil, host: AudioHost? = nil, state: PlaybackState) { self.sampleBank = sampleBank; self.host = host; self.state = state }
     public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack { VStack(alignment: .leading, spacing: 2) { Text("WAVEFORM FORGE 2.0").font(.system(size: 11, weight: .black, design: .monospaced)).foregroundStyle(StudioTheme.gradient); Text("PRECISION PCM EDITOR [INST \(String(format: "%02X", state.selectedInstrument))]").font(.system(size: 7, weight: .bold, design: .monospaced)).foregroundColor(.blue.opacity(0.6)) }; Spacer(); HStack(spacing: 12) { Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(.gray); Slider(value: $zoomLevel, in: 1.0...100.0).frame(width: 80).controlSize(.mini) }; Button(action: { let p = NSOpenPanel(); p.allowedFileTypes = ["wav", "aiff", "aif", "mp3", "m4a", "flac", "ogg"]; p.title = "Import Sample (WAV / AIFF / MP3 / M4A / FLAC)"; if p.runModal() == .OK, let u = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadInstrumentFile"), object: u) } }) { Label("IMPORT", systemImage: "plus.circle.fill").font(.system(size: 8, weight: .black)) }.buttonStyle(.bordered).controlSize(.small); RecordingControlsView(state: state, host: host) }.padding(.horizontal, 16).padding(.vertical, 10).background(StudioTheme.glassPanel())
+            HStack { VStack(alignment: .leading, spacing: 2) { Text("WAVEFORM FORGE 2.0").font(.system(size: 11, weight: .black, design: .monospaced)).foregroundStyle(StudioTheme.gradient); Text("PRECISION PCM EDITOR [INST \(String(format: "%02X", state.selectedInstrument))]").font(.system(size: 7, weight: .bold, design: .monospaced)).foregroundColor(.blue.opacity(0.6)) }; Spacer(); HStack(spacing: 12) { Image(systemName: "magnifyingglass").font(.system(size: 10)).foregroundColor(.gray); Slider(value: $zoomLevel, in: 1.0...100.0).frame(width: 80).controlSize(.mini) }; Button(action: { 
+                let p = NSOpenPanel()
+                p.allowedContentTypes = [.wav, .aiff, .mp3, .mpeg4Audio, UTType(filenameExtension: "flac")!, UTType(filenameExtension: "ogg")!]
+                p.title = "Import Sample (WAV / AIFF / MP3 / M4A / FLAC)"
+                if p.runModal() == .OK, let u = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadInstrumentFile"), object: u) } 
+            }) { Label("IMPORT", systemImage: "plus.circle.fill").font(.system(size: 8, weight: .black)) }.buttonStyle(.bordered).controlSize(.small); RecordingControlsView(state: state, host: host) }.padding(.horizontal, 16).padding(.vertical, 10).background(StudioTheme.glassPanel())
             GeometryReader { geo in ZStack { Color.black.opacity(0.6); if let bank = sampleBank, let inst = state.instruments[state.selectedInstrument], inst.regionCount > 0 { WaveformRenderer(pointer: bank.samplePointer.advanced(by: inst.regions.0.offset), count: inst.regions.0.length).stroke(StudioTheme.gradient, lineWidth: 1.5); Path { path in for i in 0..<10 { let x = geo.size.width * CGFloat(i) / 10; path.move(to: CGPoint(x: x, y: 0)); path.addLine(to: CGPoint(x: x, y: geo.size.height)) } }.stroke(Color.white.opacity(0.05), lineWidth: 0.5) } else { VStack(spacing: 12) { Image(systemName: "waveform.path.badge.plus").font(.system(size: 30)).foregroundColor(.gray.opacity(0.3)); Text("DRAG AUDIO OR CLICK IMPORT").font(.system(size: 8, weight: .bold, design: .monospaced)).foregroundColor(.gray.opacity(0.5)) }.frame(maxWidth: .infinity, maxHeight: .infinity) } } }.frame(minHeight: 160, maxHeight: .infinity).overlay(Rectangle().stroke(Color.white.opacity(0.1), lineWidth: 1))
             HStack(spacing: 8) {
                 DSPButton(label: "MAXIMIZE") {
@@ -443,7 +561,7 @@ public struct SpectralCanvasView: View {
         }
     }
     private func loadImage() { let p = NSOpenPanel(); p.allowedContentTypes = [.image, .png, .jpeg]; if p.runModal() == .OK, let u = p.url { backgroundImage = NSImage(contentsOf: u) } }
-    private func generateHarmonics() { let pts = lines.flatMap { $0 }; guard !pts.isEmpty, let bank = sampleBank else { return }; let instID = state.selectedInstrument; let offset = state.instruments.values.reduce(0) { max($0, $1.regionCount > 0 ? $1.regions.0.offset + $1.regions.0.length : 0) }; let length = 44100; let avgY = pts.map { $0.y }.reduce(0, +) / CGFloat(pts.count); let freq = Float(220.0 + (200.0 - min(200.0, avgY))); OfflineDSP.generateHarmonicSample(bank: bank, offset: offset, length: 44100, baseFreq: freq); var inst = state.instruments[instID] ?? Instrument(); inst.nameString = "Spectral Synth"; inst.setSingleRegion(SampleRegion(offset: offset, length: 44100)); state.instruments[instID] = inst; state.textureInvalidationTrigger += 1; state.showStatus("Generated at \(Int(freq))Hz"); lines.removeAll(); currentLine.removeAll() }
+    private func generateHarmonics() { let pts = lines.flatMap { $0 }; guard !pts.isEmpty, let bank = sampleBank else { return }; let instID = state.selectedInstrument; let offset = state.instruments.values.reduce(0) { max($0, $1.regionCount > 0 ? $1.regions.0.offset + $1.regions.0.length : 0) }; let avgY = pts.map { $0.y }.reduce(0, +) / CGFloat(pts.count); let freq = Float(220.0 + (200.0 - min(200.0, avgY))); OfflineDSP.generateHarmonicSample(bank: bank, offset: offset, length: 44100, baseFreq: freq); var inst = state.instruments[instID] ?? Instrument(); inst.nameString = "Spectral Synth"; inst.setSingleRegion(SampleRegion(offset: offset, length: 44100)); state.instruments[instID] = inst; state.textureInvalidationTrigger += 1; state.showStatus("Generated at \(Int(freq))Hz"); lines.removeAll(); currentLine.removeAll() }
 }
 
 public struct NeuralIntelligenceView: View {
@@ -541,5 +659,97 @@ class JITWindowManager {
         
         sharedPanel = panel
         panel.makeKeyAndOrderFront(nil)
+    }
+}
+
+// MARK: - Sample Browser
+
+@MainActor
+struct SampleBrowserView: View {
+    @Bindable var state: PlaybackState
+    @State private var items: [URL] = []
+    
+    var body: some View {
+        VStack(spacing: 0) {
+            // Path Breadcrumbs
+            HStack {
+                Text(state.browserPath.lastPathComponent.uppercased())
+                    .font(.system(size: 9, weight: .black, design: .monospaced))
+                    .foregroundColor(StudioTheme.accent)
+                Spacer()
+                Button(action: { state.browserPath = state.browserPath.deletingLastPathComponent() }) {
+                    Image(systemName: "arrow.up.doc.fill").font(.system(size: 10)).foregroundColor(.gray)
+                }.buttonStyle(.plain)
+            }
+            .padding(12)
+            .background(Color.white.opacity(0.03))
+            
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(items, id: \.self) { url in
+                        BrowserItem(url: url) {
+                            if url.hasDirectoryPath {
+                                state.browserPath = url
+                            } else {
+                                let ext = url.pathExtension.lowercased()
+                                if ["mod", "mad", "xm", "it"].contains(ext) {
+                                    NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url)
+                                } else {
+                                    NotificationCenter.default.post(name: NSNotification.Name("LoadInstrumentFile"), object: url)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .onAppear { refresh() }
+        .onChange(of: state.browserPath) { refresh() }
+    }
+    
+    private func refresh() {
+        let fm = FileManager.default
+        guard let contents = try? fm.contentsOfDirectory(at: state.browserPath, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles]) else { return }
+        
+        // Sort: Directories first, then Files
+        self.items = contents.sorted { a, b in
+            if a.hasDirectoryPath != b.hasDirectoryPath {
+                return a.hasDirectoryPath
+            }
+            return a.lastPathComponent.lowercased() < b.lastPathComponent.lowercased()
+        }.filter { url in
+            if url.hasDirectoryPath { return true }
+            let ext = url.pathExtension.lowercased()
+            return ["wav", "aif", "aiff", "mp3", "flac", "mod", "mad", "xm", "it", "s3m"].contains(ext)
+        }
+    }
+}
+
+struct BrowserItem: View {
+    let url: URL
+    let action: () -> Void
+    @State private var isHovering = false
+    
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: url.hasDirectoryPath ? "folder.fill" : "doc.audio.fill")
+                    .font(.system(size: 10))
+                    .foregroundColor(url.hasDirectoryPath ? .orange.opacity(0.7) : .blue.opacity(0.7))
+                
+                Text(url.lastPathComponent)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(isHovering ? .white : .gray)
+                    .lineLimit(1)
+                
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(isHovering ? Color.white.opacity(0.05) : Color.clear)
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .draggable(url) // Support dragging items FROM browser to workspace
     }
 }

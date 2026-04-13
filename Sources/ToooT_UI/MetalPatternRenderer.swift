@@ -95,7 +95,9 @@ public final class MetalPatternRenderer: NSObject, MTKViewDelegate, @unchecked S
                 if event.type == .empty && event.effectCommand == 0 { continue }
                 var note: UInt32 = 0
                 if event.type == .noteOn && event.value1 > 0 { note = UInt32(clamping: Int(12.0 * log2(Double(event.value1) / 440.0) + 69.0)) }
-                cellPtr[row * kMaxChannels + ch] = note | (UInt32(event.instrument) << 8) | (UInt32(event.effectCommand) << 16) | (UInt32(event.effectParam) << 24)
+                // High bit (31) set means this is a valid cell. 
+                // We pack: [31: ActiveFlag, 24-30: EffectParam, 16-23: EffectCmd, 8-15: Instrument, 0-7: Note]
+                cellPtr[row * kMaxChannels + ch] = 0x80000000 | note | (UInt32(event.instrument) << 8) | (UInt32(event.effectCommand) << 16) | (UInt32(event.effectParam) << 24)
             }
         }
         let old = frontBuffer; frontBuffer = backBuffer; backBuffer = old; isPacking = false

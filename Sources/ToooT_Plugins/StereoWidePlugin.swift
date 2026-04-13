@@ -40,8 +40,8 @@ public class StereoWidePlugin: ToooTBaseEffect {
                     
                     // Basic Stereo Widening: L' = L*1.5 - R*0.5, R' = R*1.5 - L*0.5
                     // Uses vDSP for maximum efficiency on Apple Silicon
-                    var widenFactor: Float = 1.5
-                    var crossFactor: Float = -0.5
+                    let widenFactor: Float = 1.5
+                    let crossFactor: Float = -0.5
                     
                     // Save originals into scratch before writing any output
                     // sL = copy of original left, sR = copy of original right
@@ -49,13 +49,14 @@ public class StereoWidePlugin: ToooTBaseEffect {
                     vDSP_mmov(destR, sR, vDSP_Length(frames), 1, 1, 1)
 
                     // L' = L*1.5 + R*(-0.5) using originals
-                    vDSP_vsmul(sL, 1, &widenFactor, destL, 1, vDSP_Length(frames))
-                    var neg = crossFactor
-                    vDSP_vsma(sR, 1, &neg, destL, 1, destL, 1, vDSP_Length(frames))
+                    var w = widenFactor
+                    var c = crossFactor
+                    vDSP_vsmul(sL, 1, &w, destL, 1, vDSP_Length(frames))
+                    vDSP_vsma(sR, 1, &c, destL, 1, destL, 1, vDSP_Length(frames))
 
                     // R' = R*1.5 + L*(-0.5) using originals
-                    vDSP_vsmul(sR, 1, &widenFactor, destR, 1, vDSP_Length(frames))
-                    vDSP_vsma(sL, 1, &neg, destR, 1, destR, 1, vDSP_Length(frames))
+                    vDSP_vsmul(sR, 1, &w, destR, 1, vDSP_Length(frames))
+                    vDSP_vsma(sL, 1, &c, destR, 1, destR, 1, vDSP_Length(frames))
                 }
             }
             return noErr

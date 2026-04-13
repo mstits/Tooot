@@ -14,6 +14,7 @@ public struct PluginRackView: View {
     let filterPlugs: [PluginType] = [.amplitude, .backwards, .depth, .echo, .fade, .invert, .normalize, .silence, .toneGenerator]
     let digitalPlugs: [PluginType] = [.complexFade, .fadeNote, .fadeVolume, .noteTranslate, .propagate, .revert]
     let ioPlugs: [PluginType] = [.importMIDI, .importClassicApp, .ioAIFF, .ioWave, .ioQuickTime]
+    let auv3Plugs: [PluginType] = [.externalInstrument]
 
     public init(state: PlaybackState) { self.state = state }
 
@@ -23,6 +24,7 @@ public struct PluginRackView: View {
             
             ScrollView {
                 VStack(alignment: .leading, spacing: 40) {
+                    RackSection(title: "EXTERNAL AUv3 HOST", subtitle: "Kontakt, Massive, Serum (macOS 16)", plugs: auv3Plugs, color: .purple, state: state)
                     RackSection(title: "ANALOG-EMU OFFLINE", subtitle: "High-Precision Sample Forge", plugs: filterPlugs, color: .cyan, state: state)
                     RackSection(title: "DIGITAL LOGIC ENGINE", subtitle: "Algorithmic Pattern Mutators", plugs: digitalPlugs, color: .green, state: state)
                     RackSection(title: "SIGNAL BRIDGING", subtitle: "External IO & Transpilation", plugs: ioPlugs, color: .orange, state: state)

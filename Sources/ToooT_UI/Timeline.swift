@@ -15,6 +15,7 @@
 
 import Foundation
 import ToooT_Core
+import ToooT_Plugins
 import SwiftUI
 import Combine
 
@@ -28,6 +29,7 @@ public final class Timeline {
     private let state: PlaybackState
     internal weak var audioEngine: AudioEngine?
     internal weak var renderNode:   AudioRenderNode?   // for atomic snapshot swap
+    public let hostManager = AUv3HostManager()
     private let timerContainer = TimerContainer()
     private var lastBPM: Int = 0
 
@@ -127,6 +129,10 @@ public final class Timeline {
         engine.sharedStatePtr.pointee.masterVolume        = Float(state.masterVolume)
         engine.sharedStatePtr.pointee.isStereoWideEnabled = state.isStereoWideEnabled ? 1 : 0
         engine.sharedStatePtr.pointee.isReverbEnabled     = state.isReverbEnabled ? 1 : 0
+        engine.sharedStatePtr.pointee.isMetronomeEnabled  = state.isMetronomeEnabled ? 1 : 0
+        engine.sharedStatePtr.pointee.isMasterLimiterEnabled = state.isMasterLimiterEnabled ? 1 : 0
+        engine.sharedStatePtr.pointee.sidechainChannel = Int32(state.sidechainChannel)
+        engine.sharedStatePtr.pointee.sidechainAmount = state.sidechainAmount
         if !state.isPlaying {
             // Only push UI values when stopped — engine owns these during playback
             engine.sharedStatePtr.pointee.bpm         = Int32(state.bpm)

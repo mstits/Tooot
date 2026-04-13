@@ -250,7 +250,19 @@ struct WelcomeOverlay: View {
                 
                 HStack(spacing: 20) {
                     WelcomeButton(label: "NEW PROJECT", systemImage: "plus.square.fill", color: .blue) { NotificationCenter.default.post(name: NSNotification.Name("NewTrackerDocument"), object: nil) }
-                    WelcomeButton(label: "LOAD MOD/MAD/XM", systemImage: "folder.fill", color: .green) { let p = NSOpenPanel(); p.allowedFileTypes = ["mod", "mad", "madk", "madg", "xm", "it", "s3m"]; if p.runModal() == .OK, let url = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url) } }
+                    WelcomeButton(label: "LOAD MOD/MAD/XM", systemImage: "folder.fill", color: .green) { 
+                        let p = NSOpenPanel()
+                        p.allowedContentTypes = [
+                            UTType(filenameExtension: "mod")!,
+                            UTType(filenameExtension: "mad")!,
+                            UTType(filenameExtension: "madk")!,
+                            UTType(filenameExtension: "madg")!,
+                            UTType(filenameExtension: "xm")!,
+                            UTType(filenameExtension: "it")!,
+                            UTType(filenameExtension: "s3m")!
+                        ]
+                        if p.runModal() == .OK, let url = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url) } 
+                    }
                 }
                 
                 Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NewTrackerDocument"), object: nil) }) {

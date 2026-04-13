@@ -13,16 +13,18 @@ let package = Package(
         .library(name: "ToooT_Core", targets: ["ToooT_Core"]),
         .library(name: "ToooT_UI", targets: ["ToooT_UI"]),
         .library(name: "ToooT_Plugins", targets: ["ToooT_Plugins"]),
+        .library(name: "ToooT_VST3", targets: ["ToooT_VST3"]),
         .library(name: "ToooT_IO", targets: ["ToooT_IO"]),
     ],
     dependencies: [],
     targets: [
         .target(name: "ToooT_Core", swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]),
         .target(name: "ToooT_IO", dependencies: ["ToooT_Core"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]),
-        .target(name: "ToooT_Plugins", dependencies: ["ToooT_Core"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]),
+        .target(name: "ToooT_VST3", dependencies: [], publicHeadersPath: "include", cxxSettings: [.headerSearchPath("JUCE"), .headerSearchPath("VST3_SDK")]),
+        .target(name: "ToooT_Plugins", dependencies: ["ToooT_Core", "ToooT_VST3"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]),
         .target(name: "ToooT_UI", dependencies: ["ToooT_Core", "ToooT_IO", "ToooT_Plugins"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]),
         .executableTarget(name: "ProjectToooTApp", dependencies: ["ToooT_UI"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]),
         .executableTarget(name: "UATRunner", dependencies: ["ToooT_Core", "ToooT_IO", "ToooT_UI", "ToooT_Plugins"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]),
-        .testTarget(name: "ToooT_CoreTests", dependencies: ["ToooT_Core", "ToooT_IO", "ToooT_UI"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")])
+        .testTarget(name: "ToooT_CoreTests", dependencies: ["ToooT_Core", "ToooT_IO", "ToooT_UI", "ToooT_Plugins"], swiftSettings: [.enableExperimentalFeature("StrictConcurrency")])
     ]
 )

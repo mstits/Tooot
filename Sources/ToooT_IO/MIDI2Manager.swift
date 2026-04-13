@@ -17,7 +17,7 @@ public final class MIDI2Manager: @unchecked Sendable {
     
     public init() {
         // Initialize MIDI 2.0 Client with Capability Inquiry (CI) support
-        var status = MIDIClientCreate("PROJECT ToooT UMP Client" as CFString, nil, nil, &midiClient)
+        let status = MIDIClientCreate("PROJECT ToooT UMP Client" as CFString, nil, nil, &midiClient)
         if status != noErr { print("Failed to create MIDI client: \(status)") }
     }
     
