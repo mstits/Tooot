@@ -37,6 +37,14 @@ refactor2.py
 fix_*.py
 strip_focus.py
 
+# AI Assistant Artifacts
+01-audio-engine-perf/
+02-io-save-load/
+03-ui-coherence/
+04-neural-ane-acceleration/
+05-platform-hardening/
+.claude/
+
 # Internal Project Docs
 AUDIT.md
 HANDOFF.md
