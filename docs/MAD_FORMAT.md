@@ -4,26 +4,19 @@ Native ToooT project file. All multi-byte values are little-endian.
 
 ## Top-level layout
 
-```
-+0x000  4     signature: "MADK" | "MADG" | "Tooo"
-+0x004  32    song title (ASCII, zero-padded, null-terminated)
-+0x024  239   reserved / padding
-+0x113  3     reserved
-+0x116  8     reserved
-+0x11E  3     reserved
-+0x121  3     reserved
-+0x124  1     numPatterns
-+0x125  1     numChannels
-+0x126  1     reserved
-+0x127  1     numInstruments
-+0x128  5     reserved
-+0x129  999   orderList[999] (UInt8 per position; unused entries = 0)
-+0x514        pattern data (5 bytes per cell)
-              layout: patterns × 64 rows × numChannels × 5 bytes
-              cell: [note, instrument, vol, effect, effectParam]
-after         instrument headers (232 bytes each × numInstruments)
-after         sample data (Int16 PCM, mono or interleaved stereo)
-after         optional "TOOO" plugin-state trailer
+```mermaid
+flowchart TD
+    A["+0x000 · 4 bytes<br/>signature: MADK / MADG / Tooo"]
+    B["+0x004 · 32 bytes<br/>song title (ASCII zero-padded)"]
+    C["+0x024 · 256 bytes<br/>reserved padding"]
+    D["+0x124 · header<br/>numPatterns · numChannels · numInstruments"]
+    E["+0x129 · 999 bytes<br/>orderList UInt8 × 999"]
+    F["+0x514<br/>pattern data<br/>patterns × 64 rows × numChannels × 5 bytes<br/>cell: note/inst/vol/effect/param"]
+    G["after patterns<br/>instrument headers 232 bytes × numInstruments"]
+    H["after headers<br/>sample data (Int16 PCM)"]
+    I["optional trailer<br/>TOOO chunk: plugin states + scenes + arrangement"]
+
+    A --> B --> C --> D --> E --> F --> G --> H --> I
 ```
 
 ## Pattern cell
@@ -65,10 +58,12 @@ Conversion to the engine's `Float32` representation uses `vDSP_vflt16` + `vDSP_v
 
 After the last sample, an optional chunk may appear:
 
-```
-+0    4     "TOOO"
-+4    4     chunkLength (UInt32 LE)
-+8    N     JSON body: {"pluginID": "base64(state)"}
+```mermaid
+flowchart LR
+    Tag["+0 · 4 bytes<br/>TOOO magic"]
+    Len["+4 · 4 bytes<br/>chunkLength (UInt32 LE)"]
+    Body["+8 · N bytes<br/>JSON body<br/>{pluginID: base64(state), scene.N: ..., arrangement: ...}"]
+    Tag --> Len --> Body
 ```
 
 Plugin IDs are `channelIndex_slotIndex` (AUv3 inserts), `channelIndex_inst` (instrument slot), or the reserved keys `StereoWide` / `ProReverb` for global inserts. Bodies are `PropertyListSerialization` XML plists, base64-encoded.

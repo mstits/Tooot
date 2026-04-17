@@ -4,6 +4,21 @@ Honest assessment of what ToooT has today vs what the last 30 years of pro DAWs 
 
 The goal is parity with the best, not a toy. Every gap below is addressable; none of them are blocked on research. Things marked ✅ already work.
 
+## Progress snapshot
+
+```mermaid
+pie title 39-item roadmap status
+    "Shipped" : 27
+    "Scaffold / Partial" : 4
+    "Deferred with plan" : 8
+```
+
+```mermaid
+flowchart LR
+    Today[Today<br/>27 items shipped<br/>232 UAT passes<br/>11 stress scenarios OK] --> Next[Next release<br/>ship arrangement UI<br/>ship session UI<br/>HN / Reddit launch]
+    Next --> Later[Later<br/>ARA2 + AAF skipped per OSS rule<br/>iPad skipped per platform rule<br/>CRDT collab is long-term]
+```
+
 ## Shipped
 
 - ✅ Zero-allocation real-time render loop (Swift 6 strict concurrency, `vDSP`/`Accelerate` throughout)

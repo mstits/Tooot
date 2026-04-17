@@ -121,9 +121,12 @@ graph TD;
     subgraph IOLayer [I/O & File Management]
         IO_Bank[UnifiedSampleBank]
         IO_MAD[MADParser / MADWriter]
-        IO_VST[ToooT_VST3 JUCE Bridge]
+        IO_VST[ToooT_VST3 — Steinberg SDK direct]
+        IO_CLAP[ToooT_CLAP — BSD-3 plugin host]
         UI_NI <==> IO_VST
+        UI_NI <==> IO_CLAP
         IO_VST -.-> Audio_AUv3
+        IO_CLAP -.-> Audio_AUv3
         IO_Bank -->|Raw PCM Pointer| Audio_Voice
         IO_MAD -.->|Deserializes| State_Seq
     end
@@ -137,11 +140,12 @@ graph TD;
 
 ### Module Breakdown
 
-- **`ToooT_Core`**: The beating heart of the DAW. Contains the zero-allocation `AudioRenderNode`, pattern sequencer, envelope evaluators, and atomic data structures.
-- **`ToooT_UI`**: The modern, industrial "glassmorphism" SwiftUI frontend. Houses the GPU-accelerated pattern grid, the mixer, the JIT console, and the waveform editor.
-- **`ToooT_IO`**: Custom parsers (`MADParser`, `MADWriter`) providing bit-perfect backwards compatibility.
-- **`ToooT_Plugins`**: The AUv3 hosting layer.
-- **`ToooT_VST3`**: The Objective-C++ JUCE/Steinberg bridge for VST3 plugin hosting.
+- **`ToooT_Core`**: The beating heart of the DAW. Contains the zero-allocation `AudioRenderNode`, pattern sequencer, envelope evaluators, atomic data structures, `MasterMeter` (LUFS / true-peak / phase correlation), `MusicTheory`, `Arpeggiator`, `Arrangement`, `SessionGrid`, `Automation`, `Scenes`, `StarterContent`, `Fuzzer`, `StabilityMonitor`.
+- **`ToooT_UI`**: SwiftUI frontend. Houses the GPU-accelerated pattern grid, mixer, JIT console, waveform editor, **arrangement timeline**, **session clip-launch grid**, command palette, undo-history browser, crash-recovery sheet, video sync, JS scripting host, TTS via `AVSpeechSynthesizer`.
+- **`ToooT_IO`**: Custom parsers (`MADParser`, `MADWriter`), `MIDI2Manager` (MIDI 2.0 UMP + MPE dispatch), `SpatialManager` (PHASE 3D audio).
+- **`ToooT_Plugins`**: AUv3 hosting + bundled DSP (`ReverbPlugin`, `StereoWidePlugin`, `TruePeakLimiter`, `MultibandCompressor`, `LinearPhaseEQ`) + `MasteringExport` (TPDF dither + LUFS normalize) + `OfflineDSP` + `GPU_DSP` (Metal compute kernels).
+- **`ToooT_VST3`**: Objective-C++ bridge linking directly against Steinberg's VST3 SDK. No JUCE.
+- **`ToooT_CLAP` / `ToooT_CLAP_C`**: BSD-3-Clause CLAP plugin host. BSD-licensed ABI vendored; C loader wraps `dlopen` on `.clap` bundles; Swift layer manages instance lifecycle.
 
 ---
 

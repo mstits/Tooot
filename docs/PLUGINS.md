@@ -11,6 +11,22 @@ ToooT supports four plugin surfaces on macOS, ranked by completeness and licensi
 
 JUCE has been removed entirely — its GPL/commercial dual-license is incompatible with ToooT's MIT core, and we don't need JUCE's cross-platform abstractions on macOS-native code.
 
+## Plugin signal path
+
+```mermaid
+flowchart LR
+    Engine[AudioRenderNode<br/>produces scratchL/R<br/>per channel] --> ChIns[Per-channel inserts<br/>4 AUv3 slots + 1 instrument slot]
+    ChIns --> Master[Master bus accumulator]
+    ChIns -->|optional send| Bus[Aux bus L/R]
+    Bus --> BusIns[Per-bus inserts<br/>4 AUv3 slots per bus]
+    BusIns --> Master
+    Master --> GlobalIns[Global inserts<br/>StereoWide → Reverb]
+    GlobalIns --> Limiter[Master limiter<br/>+ LUFS metering]
+    Limiter --> Output[ioData buffer]
+```
+
+The same `AUInternalRenderBlock` interface covers AUv3 natives, the CLAP shim (wrapped as an AU block), and the VST3 bridge (when SDK is vendored). All paths are byte-compatible — swap plugins between channels without hitting new code paths.
+
 ## AUv3
 
 ### Discovery
