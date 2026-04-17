@@ -31,7 +31,7 @@ cat << PLIST > "$APP_NAME/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>2.0.0</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>
@@ -42,6 +42,35 @@ cat << PLIST > "$APP_NAME/Contents/Info.plist"
     <string>ToooT requires screen capture access to record its output.</string>
     <key>NSCameraUsageDescription</key>
     <string>ToooT requires camera access for certain features.</string>
+
+    <!-- Declare .mad as a native document type so Finder double-click opens ToooT,
+         Quick Look can preview it, and Spotlight knows about the extension.
+         mdimporter plugin for actual rich content indexing is a follow-up. -->
+    <key>CFBundleDocumentTypes</key>
+    <array>
+      <dict>
+        <key>CFBundleTypeName</key><string>ToooT Project</string>
+        <key>CFBundleTypeRole</key><string>Editor</string>
+        <key>LSHandlerRank</key><string>Owner</string>
+        <key>LSItemContentTypes</key>
+        <array><string>com.apple.projecttooot.mad</string></array>
+      </dict>
+    </array>
+
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+      <dict>
+        <key>UTTypeIdentifier</key><string>com.apple.projecttooot.mad</string>
+        <key>UTTypeDescription</key><string>ToooT Project (MAD)</string>
+        <key>UTTypeConformsTo</key>
+        <array><string>public.data</string><string>public.content</string></array>
+        <key>UTTypeTagSpecification</key>
+        <dict>
+          <key>public.filename-extension</key><array><string>mad</string></array>
+          <key>public.mime-type</key><array><string>application/x-tooot-mad</string></array>
+        </dict>
+      </dict>
+    </array>
 </dict>
 </plist>
 PLIST

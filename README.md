@@ -7,6 +7,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-6.0-orange)
+[![CI](https://github.com/mstits/Tooot/actions/workflows/ci.yml/badge.svg)](https://github.com/mstits/Tooot/actions/workflows/ci.yml)
 
 ---
 
@@ -176,6 +177,15 @@ swift build && .build/arm64-apple-macosx/debug/UATRunner
 ```
 
 ---
+
+## Documentation
+
+Deeper reading in `docs/`:
+
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) — module graph, thread model, render pipeline, snapshot lifecycle, memory ownership.
+- [MAD_FORMAT.md](docs/MAD_FORMAT.md) — `.mad` file layout, instrument header, plugin-state trailer, round-trip guarantees.
+- [JIT_SHELL.md](docs/JIT_SHELL.md) — ToooTShell command reference and macro system.
+- [PLUGINS.md](docs/PLUGINS.md) — AUv3 hosting contract, bundled effects, VST3 status and enablement steps.
 
 ## License
 
