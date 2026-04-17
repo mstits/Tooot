@@ -19,7 +19,12 @@ public final class AudioEngine: AUAudioUnit, @unchecked Sendable {
     public let eventBuffer: AtomicRingBuffer<TrackerEvent>
     public let sampleBank: UnifiedSampleBank
     public let sharedStatePtr: UnsafeMutablePointer<EngineSharedState>
-    
+
+    /// Project sample rate. Fixed at engine init; 44.1 k for tracker legacy, 48 k for broadcast,
+    /// 96 k for mastering, up to 192 k for archival. Changing mid-session requires restarting
+    /// the engine (CoreAudio output unit's stream format is fixed at `AudioUnitInitialize`).
+    public let sampleRate: Double
+
     // The new zero-allocation render node
     public let renderNode: AudioRenderNode
     private let renderResources: RenderResources
@@ -35,19 +40,31 @@ public final class AudioEngine: AUAudioUnit, @unchecked Sendable {
     private var _outputBusses: AUAudioUnitBusArray!
     public override var outputBusses: AUAudioUnitBusArray { _outputBusses }
 
-    public override init(componentDescription: AudioComponentDescription, options: AudioComponentInstantiationOptions = []) throws {
+    public override convenience init(componentDescription: AudioComponentDescription,
+                                     options: AudioComponentInstantiationOptions = []) throws {
+        try self.init(componentDescription: componentDescription, options: options, sampleRate: 44100)
+    }
+
+    public init(componentDescription: AudioComponentDescription,
+                options: AudioComponentInstantiationOptions = [],
+                sampleRate: Double) throws {
+        self.sampleRate  = sampleRate
         self.eventBuffer = AtomicRingBuffer<TrackerEvent>(capacity: 1024)
-        self.sampleBank = UnifiedSampleBank(capacity: 1024 * 1024 * 64) // 256MB
-        
+        self.sampleBank  = UnifiedSampleBank(capacity: 1024 * 1024 * 64) // 256MB
+
         self.sharedStatePtr = .allocate(capacity: 1)
         self.sharedStatePtr.initialize(to: EngineSharedState())
-        
+
         self.renderResources = RenderResources(maxFrames: 4096)
-        self.renderNode = AudioRenderNode(resources: self.renderResources, statePtr: self.sharedStatePtr, bank: self.sampleBank, eventBuffer: self.eventBuffer)
-        
+        self.renderNode = AudioRenderNode(resources: self.renderResources,
+                                          statePtr: self.sharedStatePtr,
+                                          bank: self.sampleBank,
+                                          eventBuffer: self.eventBuffer,
+                                          sampleRate: sampleRate)
+
         try super.init(componentDescription: componentDescription, options: options)
-        
-        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 2)!
+
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 2)!
         let bus = try AUAudioUnitBus(format: format)
         self._outputBusses = AUAudioUnitBusArray(audioUnit: self, busType: .output, busses: [bus])
     }

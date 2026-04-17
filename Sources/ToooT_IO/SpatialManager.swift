@@ -25,12 +25,14 @@ public final class SpatialManager: @unchecked Sendable {
     
     private let audioFormat: AVAudioFormat
 
-    public init() {
+    /// Initialize PHASE at the project's sample rate. Must match `AudioEngine.sampleRate`
+    /// — the push-stream nodes reject buffers whose format doesn't line up.
+    public init(sampleRate: Double = 44100) {
         self.engine = PHASEEngine(updateMode: .automatic)
         self.listener = PHASEListener(engine: engine)
-        
-        // standardFormatWithSampleRate: 44100, channels: 1 (mono for spatialization)
-        self.audioFormat = AVAudioFormat(standardFormatWithSampleRate: 44100.0, channels: 1)!
+
+        // Mono format for spatialization (PHASE head-relative mixer wants mono sources).
+        self.audioFormat = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1)!
         
         // Position listener at center
         listener.transform = matrix_identity_float4x4

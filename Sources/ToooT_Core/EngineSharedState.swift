@@ -30,6 +30,26 @@ public struct EngineSharedState {
     public var peakLevel: Float = 0.0
     public var activeVoices: Int32 = 0
     public var masterVolume: Float = 0.8
+
+    // Mastering-grade metering on the master bus. All updated once per render block.
+    //
+    //  • `truePeak`       — peak of a 4×-oversampled (FIR linear-phase) master, in linear
+    //                       amplitude. Use 20·log10(truePeak) for dBTP. Standards: EBU R128
+    //                       (broadcast) allows −1 dBTP; Apple / Spotify streaming targets
+    //                       −1 dBTP. Catches inter-sample peaks that raw peak misses.
+    //  • `lufsMomentary`  — K-weighted loudness over the last 400 ms, in LUFS. Real-time.
+    //  • `lufsShortTerm`  — K-weighted loudness over the last 3 s. Real-time.
+    //  • `lufsIntegrated` — K-weighted, gated (ITU-R BS.1770-4) over the full playback.
+    //                       Updated each block; reset at play start. This is the "program"
+    //                       loudness — Spotify −14, Apple Music −16, broadcast R128 −23.
+    //  • `phaseCorrelation` — Pearson correlation between L and R over the last 400 ms.
+    //                       +1 = mono-compatible, 0 = uncorrelated stereo, −1 = phase-
+    //                       inverted (likely a bug or an M/S artefact).
+    public var truePeak:         Float = 0.0
+    public var lufsMomentary:    Float = -70.0
+    public var lufsShortTerm:    Float = -70.0
+    public var lufsIntegrated:   Float = -70.0
+    public var phaseCorrelation: Float = 1.0
     
     public var isStereoWideEnabled: Int32 = 0
     public var isReverbEnabled: Int32 = 0
