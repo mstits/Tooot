@@ -14,14 +14,36 @@ public struct PianoRollView: View {
     @State private var dragIsErasing: Bool = false
     @State private var dragLastCol: Int = -1
     @State private var dragLastNote: Int = -1
+    /// Expression lane selection — which CC is visible under the note grid.
+    @State private var selectedCC: CCLane = .velocity
+    @State private var ccDragLastCol: Int = -1
 
     public init(state: PlaybackState, timeline: Timeline? = nil) {
         self.state = state
         self.timeline = timeline
     }
-    
+
     private let noteHeight: CGFloat = 14.0
     private let kCols: Int = 64
+    private let ccLaneHeight: CGFloat = 70
+
+    /// Expression lanes: velocity is read/written on each note directly; CC lanes
+    /// (modulation, pan, brightness) persist as AutomationLane entries keyed
+    /// "piano.<channel>.<cc>" so they round-trip through .mad.
+    public enum CCLane: String, CaseIterable, Identifiable {
+        case velocity = "Velocity"
+        case modWheel = "Mod (CC1)"
+        case expression = "Expression (CC11)"
+        case pan = "Pan (CC10)"
+        case pitchBend = "Pitch Bend"
+        public var id: String { rawValue }
+        public var ccNumber: Int? {
+            switch self { case .velocity, .pitchBend: return nil
+                          case .modWheel: return 1
+                          case .expression: return 11
+                          case .pan: return 10 }
+        }
+    }
 
     public var body: some View {
         ZStack {
@@ -54,21 +76,127 @@ public struct PianoRollView: View {
                     }
                     .scrollDisabled(true) // Should sync with grid scroll
                     
-                    // Grid
-                    ScrollView([.horizontal, .vertical]) {
-                        ZStack(alignment: .topLeading) {
-                            Canvas { context, size in
-                                drawGrid(context: context, size: size)
-                                drawNotes(context: context, size: size)
-                                drawPlayhead(context: context, size: size)
+                    // Grid + CC lane
+                    VStack(spacing: 0) {
+                        ScrollView([.horizontal, .vertical]) {
+                            ZStack(alignment: .topLeading) {
+                                Canvas { context, size in
+                                    drawGrid(context: context, size: size)
+                                    drawNotes(context: context, size: size)
+                                    drawPlayhead(context: context, size: size)
+                                }
+                                .frame(width: 1200 * state.xZoom, height: 128 * noteHeight)
+                                .gesture(DragGesture(minimumDistance: 0).onChanged { handleDrag($0) }.onEnded { _ in dragLastCol = -1; dragLastNote = -1 })
                             }
-                            .frame(width: 1200 * state.xZoom, height: 128 * noteHeight)
-                            .gesture(DragGesture(minimumDistance: 0).onChanged { handleDrag($0) }.onEnded { _ in dragLastCol = -1; dragLastNote = -1 })
                         }
+
+                        // Expression / CC lane strip
+                        ccLaneToolbar
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            Canvas { context, size in
+                                drawCCLane(context: context, size: size)
+                            }
+                            .frame(width: 1200 * state.xZoom, height: ccLaneHeight)
+                            .gesture(DragGesture(minimumDistance: 0)
+                                .onChanged { handleCCDrag($0) }
+                                .onEnded { _ in ccDragLastCol = -1 })
+                        }
+                        .background(Color.black.opacity(0.4))
                     }
                 }
             }
         }
+    }
+
+    // MARK: - CC lane UI
+
+    @ViewBuilder private var ccLaneToolbar: some View {
+        HStack(spacing: 8) {
+            Text("EXPR").font(.system(size: 9, weight: .bold)).foregroundColor(.gray)
+            Picker("", selection: $selectedCC) {
+                ForEach(CCLane.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented).controlSize(.mini)
+            Spacer()
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Color.black.opacity(0.3))
+    }
+
+    private func drawCCLane(context: GraphicsContext, size: CGSize) {
+        let rowWidth = size.width / CGFloat(kCols)
+        // Beat markers.
+        for col in stride(from: 0, to: kCols, by: 4) {
+            let x = CGFloat(col) * rowWidth
+            context.stroke(
+                Path { p in p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x, y: size.height)) },
+                with: .color(.white.opacity(0.06)), lineWidth: 0.5)
+        }
+        context.stroke(
+            Path { p in p.move(to: CGPoint(x: 0, y: size.height / 2)); p.addLine(to: CGPoint(x: size.width, y: size.height / 2)) },
+            with: .color(.white.opacity(0.08)), lineWidth: 0.5)
+
+        // Read values per column.
+        let pat = state.currentPattern; let ch = state.selectedChannel
+        for col in 0..<kCols {
+            let ev = state.sequencerData.events[(pat * 64 + col) * kMaxChannels + ch]
+            let value: Float = {
+                switch selectedCC {
+                case .velocity:  return ev.type == .noteOn ? ev.value2 : 0
+                case .modWheel, .expression, .pan:
+                    return state.ccLaneValue(pattern: pat, ch: ch, col: col, cc: selectedCC.ccNumber ?? 0)
+                case .pitchBend:
+                    // Convert the TrackerEvent's per-note bend (Int16 ±8192) to 0…1.
+                    let v = Float(ev.perNotePitchBend)
+                    return (v / 16384.0) + 0.5
+                }
+            }()
+            guard value > 0.001 else { continue }
+            let h = CGFloat(value) * size.height
+            let rect = CGRect(x: CGFloat(col) * rowWidth + 1,
+                              y: size.height - h,
+                              width: max(1, rowWidth - 2),
+                              height: h)
+            let tint: Color = {
+                switch selectedCC {
+                case .velocity: return StudioTheme.accent
+                case .modWheel, .expression: return .cyan
+                case .pan: return .yellow
+                case .pitchBend: return .orange
+                }
+            }()
+            context.fill(Path(rect), with: .color(tint.opacity(0.75)))
+        }
+    }
+
+    private func handleCCDrag(_ value: DragGesture.Value) {
+        let gridWidth = 1200 * state.xZoom
+        let rowWidth = gridWidth / CGFloat(kCols)
+        let col = Int(value.location.x / rowWidth).clamped(to: 0...(kCols - 1))
+        // Invert Y: top of lane = 1.0, bottom = 0.
+        let laneY = value.location.y
+        let normalized = Float(max(0, min(1, 1.0 - laneY / ccLaneHeight)))
+        guard col != ccDragLastCol else { return }
+        ccDragLastCol = col
+
+        let pat = state.currentPattern; let ch = state.selectedChannel
+        let idx = (pat * 64 + col) * kMaxChannels + ch
+        switch selectedCC {
+        case .velocity:
+            if state.sequencerData.events[idx].type == .noteOn {
+                if ccDragLastCol == col && col >= 0 {
+                    state.sequencerData.events[idx].value2 = normalized.clamped(to: 0.05...1)
+                }
+            }
+        case .modWheel, .expression, .pan:
+            state.setCCLaneValue(pattern: pat, ch: ch, col: col,
+                                 cc: selectedCC.ccNumber ?? 0, value: normalized)
+        case .pitchBend:
+            // ±8192 range, centered at 0.5.
+            let bend = Int16((normalized - 0.5) * 16384)
+            state.sequencerData.events[idx].perNotePitchBend = bend
+        }
+        timeline?.publishSnapshot(); state.textureInvalidationTrigger += 1
     }
     
     private func handleDrag(_ value: DragGesture.Value) {

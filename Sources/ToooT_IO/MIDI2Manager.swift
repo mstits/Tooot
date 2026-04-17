@@ -103,6 +103,13 @@ public final class MIDI2Manager: @unchecked Sendable {
         sendCC(0x26, value: 0,    channel: 0, dest: dest) // Data Entry LSB
     }
 
+    /// Public Control Change send. Picks the first destination if available;
+    /// no-op if no MIDI destinations are connected.
+    public func sendControlChange(cc: UInt8, value: UInt8, channel: UInt8) {
+        guard midiOutPort != 0, MIDIGetNumberOfDestinations() > 0 else { return }
+        sendCC(cc, value: value, channel: channel, dest: MIDIGetDestination(0))
+    }
+
     private func sendCC(_ cc: UInt8, value: UInt8, channel: UInt8, dest: MIDIEndpointRef) {
         var pktList = MIDIPacketList()
         let ptr  = MIDIPacketListInit(&pktList)
@@ -111,27 +118,93 @@ public final class MIDI2Manager: @unchecked Sendable {
         MIDISend(midiOutPort, dest, &pktList)
     }
     
-    /// High-performance UMP dispatch directly to the Audio Thread
+    /// High-performance UMP dispatch directly to the Audio Thread.
+    ///
+    /// MIDI 2.0 UMP layout reminder (Type 4, 64-bit voice messages):
+    ///   word0 = [type:4][group:4][status:4][channel:4][noteNum:8][attrType:8]
+    ///   word1 = [16-bit velocity | pitch / per-note data][16-bit attr data]
+    ///
+    /// Statuses we handle:
+    ///   0x9  — Note On                         (velocity16)
+    ///   0x8  — Note Off                        (velocity16 as release)
+    ///   0x6  — Per-Note Pitch Bend             (pitchBend32 in word1)
+    ///   0xA  — Poly Pressure / Per-Note Ctrl   (pressure16 in word1)
+    ///   0xF  — Per-Note Management
     public func dispatchUMP(_ packet: UnsafePointer<MIDIEventPacket>, ringBuffer: AtomicRingBuffer<TrackerEvent>) {
         let ump = packet.pointee.words.0
         let messageType = (ump & 0xF0000000) >> 28
-        
+
         // MIDI 2.0 64-bit Voice Message (Type 4)
         if messageType == 0x4 {
-            let status = (ump & 0x00F00000) >> 20
+            let status  = (ump & 0x00F00000) >> 20
             let channel = UInt8((ump & 0x000F0000) >> 16)
-            
-            if status == 0x9 { // Note On
-                let note = UInt8((ump & 0x00007F00) >> 8)
+            let note    = UInt8((ump & 0x00007F00) >> 8)
+
+            switch status {
+            case 0x9:   // Note On
                 let velocity16 = UInt16(packet.pointee.words.1 >> 16)
-                
                 let frequency = 440.0 * pow(2.0, (Float(note) - 69.0) / 12.0)
-                let parsedVelocity = Float(velocity16) / 65535.0 // 16-bit resolution
-                
-                let event = TrackerEvent(type: .noteOn, channel: channel, value1: frequency, value2: parsedVelocity)
+                let parsedVelocity = Float(velocity16) / 65535.0
+                let noteId: UInt16 = nextNoteId(channel: channel, note: note, allocate: true)
+                let event = TrackerEvent(
+                    type: .noteOn, channel: channel, value1: frequency, value2: parsedVelocity,
+                    noteId: noteId)
                 _ = ringBuffer.push(event)
+
+            case 0x8:   // Note Off
+                let noteId: UInt16 = nextNoteId(channel: channel, note: note, allocate: false)
+                let frequency = 440.0 * pow(2.0, (Float(note) - 69.0) / 12.0)
+                let event = TrackerEvent(
+                    type: .noteOff, channel: channel, value1: frequency,
+                    noteId: noteId)
+                _ = ringBuffer.push(event)
+
+            case 0x6:   // Per-Note Pitch Bend (32-bit)
+                // Bias is 0x80000000 = center; map to ±8192 (semitone scaled elsewhere).
+                let raw = Int32(bitPattern: packet.pointee.words.1)
+                let biased = Int64(raw) - Int64(0x80000000)
+                let clamped = max(min(biased / (Int64(1) << 17), Int64(Int16.max)), Int64(Int16.min))
+                let bend16 = Int16(clamped)
+                let noteId = nextNoteId(channel: channel, note: note, allocate: false)
+                let event = TrackerEvent(
+                    type: .pitchBend, channel: channel, value1: Float(bend16) / 8192.0,
+                    noteId: noteId, perNotePitchBend: bend16)
+                _ = ringBuffer.push(event)
+
+            case 0xA:   // Poly/Per-Note Pressure (high byte of word1's upper half)
+                let pressure16 = UInt16(packet.pointee.words.1 >> 16)
+                let pressure7  = UInt8(pressure16 >> 9) & 0x7F
+                let noteId = nextNoteId(channel: channel, note: note, allocate: false)
+                let event = TrackerEvent(
+                    type: .pitchBend, channel: channel, value2: Float(pressure16) / 65535.0,
+                    noteId: noteId, perNotePressure: pressure7)
+                _ = ringBuffer.push(event)
+
+            default:
+                break
             }
         }
+    }
+
+    // MARK: - Note-ID allocation (for MPE voice tracking)
+
+    /// Map from (channel, note) → active noteId. Allocation is lightweight — UMP
+    /// dispatch runs on CoreMIDI's delivery thread, not the render thread, so an
+    /// atomic dictionary is fine here.
+    private var noteIdTable: [Int: UInt16] = [:]
+    private var nextFreshNoteId: UInt16 = 1
+    private let noteIdLock = NSLock()
+
+    private func nextNoteId(channel: UInt8, note: UInt8, allocate: Bool) -> UInt16 {
+        noteIdLock.lock(); defer { noteIdLock.unlock() }
+        let key = (Int(channel) << 8) | Int(note)
+        if let existing = noteIdTable[key] { return existing }
+        guard allocate else { return 0 }
+        let id = nextFreshNoteId
+        nextFreshNoteId = nextFreshNoteId &+ 1
+        if nextFreshNoteId == 0 { nextFreshNoteId = 1 }   // skip 0 (= "no MPE")
+        noteIdTable[key] = id
+        return id
     }
     
     // MARK: - MIDI Clock (0xF8 — 24 pulses per quarter note)

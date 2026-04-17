@@ -74,6 +74,10 @@ public final class PlaybackState: @unchecked Sendable {
     nonisolated(unsafe) public let pitchEnvEnabledPtr: UnsafeMutablePointer<Int32>
 
     private var undoStack: [[TrackerEvent]] = []; private var redoStack: [[TrackerEvent]] = []
+    /// Parallel array to undoStack — same length, holds a human-readable label for each
+    /// snapshot (e.g. "Paint note", "Fill channel 3", "Shuffle", "Humanize"). The Undo
+    /// History Browser surfaces these so the user can jump back N steps meaningfully.
+    public private(set) var undoLabels: [String] = []
     public var textureInvalidationTrigger: Int = 0; public var mixerGeneration: Int = 0; public var activePluginDialog: PluginType? = nil; public var statusMessage: String? = nil
 
     // MARK: - Non-Destructive Offline DSP undo
@@ -103,6 +107,71 @@ public final class PlaybackState: @unchecked Sendable {
 
     // MARK: - AUv3 Plugin State Persistence (keyed by PluginType.rawValue → JSON Data)
     public var pluginStates: [String: Data] = [:]
+
+    /// Per-project scene bank. Scenes are saved into the .mad TOOO chunk alongside
+    /// plugin states (SceneBank.exportAsPluginStateData is merged into pluginStates
+    /// at save time; imported on load).
+    public let sceneBank = SceneBank()
+
+    /// CC-lane storage keyed by "pat.<pattern>.ch.<channel>.cc.<cc>" → [col:value].
+    /// Persists through the `.mad` TOOO chunk via `pluginStates` merge at save time.
+    /// Values are 0…1 normalized (translated to MIDI 0–127 on output).
+    public var ccLanes: [String: [Int: Float]] = [:]
+
+    public func ccLaneValue(pattern p: Int, ch: Int, col: Int, cc: Int) -> Float {
+        ccLanes["pat.\(p).ch.\(ch).cc.\(cc)"]?[col] ?? 0
+    }
+    public func setCCLaneValue(pattern p: Int, ch: Int, col: Int, cc: Int, value: Float) {
+        let key = "pat.\(p).ch.\(ch).cc.\(cc)"
+        var lane = ccLanes[key] ?? [:]
+        lane[col] = value
+        ccLanes[key] = lane
+    }
+
+    /// Snapshots the current mixer state into a SceneSnapshot.
+    public func captureCurrentScene(name: String = "Scene") -> SceneSnapshot {
+        let nb = kAuxBusCount
+        let sends: [Float] = engineRenderResources.map { rr in
+            (0..<(kMaxChannels * nb)).map { rr.sendAmounts[$0] }
+        } ?? Array(repeating: 0, count: kMaxChannels * nb)
+        let busVols: [Float] = engineRenderResources.map { rr in
+            (0..<nb).map { rr.busVolumes[$0] }
+        } ?? Array(repeating: 1.0, count: nb)
+        return SceneSnapshot(
+            name:           name,
+            channelVolumes: (0..<kMaxChannels).map { channelVolumesPtr[$0] },
+            channelPans:    (0..<kMaxChannels).map { channelPansPtr[$0] },
+            channelMutes:   (0..<kMaxChannels).map { channelMutesPtr[$0] },
+            channelSolos:   (0..<kMaxChannels).map { channelSolosPtr[$0] },
+            sendAmounts:    sends,
+            busVolumes:     busVols,
+            masterVolume:   Float(masterVolume),
+            bpm:            bpm,
+            sidechainChannel: Int32(sidechainChannel),
+            sidechainAmount:  sidechainAmount)
+    }
+
+    /// Recalls a scene — applies all its fields to the current engine state.
+    public func recallScene(_ scene: SceneSnapshot) {
+        for i in 0..<min(kMaxChannels, scene.channelVolumes.count) { channelVolumesPtr[i] = scene.channelVolumes[i] }
+        for i in 0..<min(kMaxChannels, scene.channelPans.count)    { channelPansPtr[i]    = scene.channelPans[i] }
+        for i in 0..<min(kMaxChannels, scene.channelMutes.count)   { channelMutesPtr[i]   = scene.channelMutes[i] }
+        for i in 0..<min(kMaxChannels, scene.channelSolos.count)   { channelSolosPtr[i]   = scene.channelSolos[i] }
+        if let rr = engineRenderResources {
+            let nb = kAuxBusCount
+            for i in 0..<min(kMaxChannels * nb, scene.sendAmounts.count) {
+                rr.sendAmounts[i] = scene.sendAmounts[i]
+            }
+            for i in 0..<min(nb, scene.busVolumes.count) {
+                rr.busVolumes[i] = scene.busVolumes[i]
+            }
+        }
+        masterVolume      = Double(scene.masterVolume)
+        bpm               = scene.bpm
+        sidechainChannel  = Int(scene.sidechainChannel)
+        sidechainAmount   = scene.sidechainAmount
+        mixerGeneration  += 1
+    }
     
     public init() {
         instrumentBank = .allocate(capacity: 256); instrumentBank.initialize(repeating: Instrument(), count: 256)
@@ -118,18 +187,53 @@ public final class PlaybackState: @unchecked Sendable {
     deinit {
         instrumentBank.deallocate(); channelVolumesPtr.deallocate(); channelPansPtr.deallocate(); channelMutesPtr.deallocate(); channelSolosPtr.deallocate(); midiChannelsPtr.deallocate(); volEnvEnabledPtr.deallocate(); panEnvEnabledPtr.deallocate(); pitchEnvEnabledPtr.deallocate()
     }
+    /// Per-bus names (user-facing). Stored on PlaybackState, not in the RT render path.
+    public var busNames: [String] = (0..<kAuxBusCount).map { "Bus \($0 + 1)" }
+
+    /// Returns (send amount 0…∞, bus master volume 0…∞). Reads the RT-visible arrays.
+    public func getSend(channel ch: Int, bus b: Int) -> Float {
+        guard ch >= 0, ch < kMaxChannels, b >= 0, b < kAuxBusCount,
+              let render = engineRenderResources else { return 0 }
+        return render.sendAmounts[ch * kAuxBusCount + b]
+    }
+
+    /// Sets the post-fader send amount from `channel` to `bus` (0 = none, 1 = unity).
+    public func setSend(channel ch: Int, bus b: Int, amount: Float) {
+        guard ch >= 0, ch < kMaxChannels, b >= 0, b < kAuxBusCount,
+              let render = engineRenderResources else { return }
+        render.sendAmounts[ch * kAuxBusCount + b] = max(0, amount)
+        mixerGeneration += 1
+    }
+
+    /// Sets bus master volume (0 = muted, 1 = unity, >1 = gain).
+    public func setBusVolume(_ v: Float, bus b: Int) {
+        guard b >= 0, b < kAuxBusCount, let render = engineRenderResources else { return }
+        render.busVolumes[b] = max(0, v)
+        mixerGeneration += 1
+    }
+
+    /// Set by AudioHost once the AudioEngine is wired — gives PlaybackState RT-safe
+    /// access to the shared bus / send arrays without the UI needing to reach through
+    /// AudioEngine.renderNode.resources every call.
+    public weak var engineRenderResources: RenderResources?
+
     public func setVolume(_ v: Float, for ch: Int) { if ch >= 0 && ch < kMaxChannels { channelVolumesPtr[ch] = v; mixerGeneration += 1 } }
     public func setPan(_ v: Float, for ch: Int) { if ch >= 0 && ch < kMaxChannels { channelPansPtr[ch] = v; mixerGeneration += 1 } }
     public func setMute(_ m: Bool, for ch: Int) { if ch >= 0 && ch < kMaxChannels { channelMutesPtr[ch] = m ? 1 : 0; mixerGeneration += 1 } }
     public func setSolo(_ s: Bool, for ch: Int) { if ch >= 0 && ch < kMaxChannels { channelSolosPtr[ch] = s ? 1 : 0; mixerGeneration += 1 } }
     public var anySolo: Bool { for i in 0..<kMaxChannels { if channelSolosPtr[i] != 0 { return true } }; return false }
     public var automationLanes: [Int: [AutomationLane]] = [:]; public var channelPositions: [Int: SIMD3<Float>] = [:]
-    public func snapshotForUndo() {
+    public func snapshotForUndo(label: String = "Edit") {
         let count = kMaxChannels * 64 * 100; let copy = Array(UnsafeBufferPointer(start: sequencerData.events, count: count))
-        if undoStack.count >= 50 { undoStack.removeFirst() }; undoStack.append(copy); redoStack.removeAll()
+        if undoStack.count >= 50 { undoStack.removeFirst(); undoLabels.removeFirst() }
+        undoStack.append(copy)
+        undoLabels.append(label)
+        redoStack.removeAll()
     }
     public func undo() {
-        guard let snapshot = undoStack.popLast() else { return }; let count = kMaxChannels * 64 * 100; let copy = Array(UnsafeBufferPointer(start: sequencerData.events, count: count))
+        guard let snapshot = undoStack.popLast() else { return }
+        _ = undoLabels.popLast()
+        let count = kMaxChannels * 64 * 100; let copy = Array(UnsafeBufferPointer(start: sequencerData.events, count: count))
         redoStack.append(copy); snapshot.withUnsafeBufferPointer { src in guard let base = src.baseAddress else { return }; memcpy(sequencerData.events, base, count * MemoryLayout<TrackerEvent>.size) }
         textureInvalidationTrigger += 1
     }

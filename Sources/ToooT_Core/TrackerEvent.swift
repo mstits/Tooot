@@ -37,8 +37,24 @@ public struct TrackerEvent: Sendable, BitwiseCopyable {
     public var effectParam: UInt8
     public var probability: UInt8 // 0-100% chance to trigger
     public var algSeed: UInt8     // Seed for algorithmic generation
-    
-    public init(type: TrackerEventType, channel: UInt8, instrument: UInt8 = 0, value1: Float32 = 0, value2: Float32 = 0, effectCommand: UInt8 = 0, effectParam: UInt8 = 0, probability: UInt8 = 100, algSeed: UInt8 = 0) {
+
+    // MPE (MIDI Polyphonic Expression) per-note data.
+    // Set by MIDI 2.0 UMP dispatch when the incoming message is a per-note
+    // configuration. `noteId` identifies the voice across a note-on / note-off
+    // pair — controllers like Roli Seaboard / LinnStrument emit distinct IDs
+    // per finger so pitch bend + pressure + Y can be routed back to the right
+    // voice. A noteId of 0 means "no MPE" — legacy channel-wide MIDI behaviour.
+    public var noteId:           UInt16 = 0
+    public var perNotePitchBend: Int16  = 0   // signed 14-bit range (±8192), semitone-scaled at playback
+    public var perNotePressure:  UInt8  = 0   // 0..127
+    public var perNoteTimbre:    UInt8  = 0   // 0..127 — typical "slide" / Y axis
+
+    public init(type: TrackerEventType, channel: UInt8, instrument: UInt8 = 0,
+                value1: Float32 = 0, value2: Float32 = 0,
+                effectCommand: UInt8 = 0, effectParam: UInt8 = 0,
+                probability: UInt8 = 100, algSeed: UInt8 = 0,
+                noteId: UInt16 = 0, perNotePitchBend: Int16 = 0,
+                perNotePressure: UInt8 = 0, perNoteTimbre: UInt8 = 0) {
         self.type = type
         self.channel = channel
         self.instrument = instrument
@@ -48,5 +64,9 @@ public struct TrackerEvent: Sendable, BitwiseCopyable {
         self.effectParam = effectParam
         self.probability = probability
         self.algSeed = algSeed
+        self.noteId = noteId
+        self.perNotePitchBend = perNotePitchBend
+        self.perNotePressure  = perNotePressure
+        self.perNoteTimbre    = perNoteTimbre
     }
 }
