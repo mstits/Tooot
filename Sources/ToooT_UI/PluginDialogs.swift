@@ -148,7 +148,7 @@ struct ExternalInstrumentDialog: View {
             Text("HOSTING ON CHANNEL \(state.selectedChannel + 1)").font(.system(size: 8, weight: .black)).foregroundColor(.orange.opacity(0.8))
         }
         .onAppear {
-            vst3Plugins = JUCEVST3Host.discoverPlugins()
+            vst3Plugins = VST3Host.discoverPlugins()
         }
     }
     

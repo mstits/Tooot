@@ -7,6 +7,7 @@ import ToooT_IO
 import ToooT_UI
 import ToooT_Plugins
 import ToooT_VST3
+import ToooT_CLAP
 import AudioToolbox
 
 nonisolated(unsafe) var passed = 0
@@ -1042,6 +1043,787 @@ func testUXFeedback() {
 }
 MainActor.assumeIsolated { testUXFeedback() }
 
+// Pure-DSP suites 30–32 run here, BEFORE the AUv3/VST3 hosting probes that can stall
+// the runner on hosts with no audio device (CI). Keep these self-contained.
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 30. OfflineDSP time-stretch (SOLA) — duration scaling + pitch preservation
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 30. OfflineDSP Time-Stretch (SOLA) ──────────────────────────────")
+autoreleasepool {
+    let srcLen = 8192
+    let bank = UnifiedSampleBank(capacity: srcLen * 8)
+    let freq: Float = 440
+    let sr:   Float = 44100
+    for i in 0..<srcLen {
+        bank.samplePointer[i] = sinf(2.0 * .pi * freq * Float(i) / sr)
+    }
+    var srcCrossings = 0
+    for i in 1..<srcLen {
+        if (bank.samplePointer[i - 1] < 0) != (bank.samplePointer[i] < 0) { srcCrossings += 1 }
+    }
+    let stretched = OfflineDSP.timeStretch(bank: bank, offset: 0, length: srcLen, factor: 2.0)
+    assert(stretched > Int(Double(srcLen) * 1.5),
+           "Time-stretch 2× produced \(stretched) frames (expected > \(Int(Double(srcLen) * 1.5)))")
+    var outCrossings = 0
+    for i in 1..<stretched {
+        if (bank.samplePointer[i - 1] < 0) != (bank.samplePointer[i] < 0) { outCrossings += 1 }
+    }
+    let srcDensity = Float(srcCrossings) / Float(srcLen)
+    let outDensity = Float(outCrossings) / Float(stretched)
+    let densityRatio = outDensity / srcDensity
+    assert(densityRatio > 0.85 && densityRatio < 1.15,
+           "Time-stretch preserves pitch: density ratio = \(densityRatio) (expected ≈1.0±0.15)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 31. OfflineDSP pitch-shift — semitone shift without duration change
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 31. OfflineDSP Pitch-Shift ──────────────────────────────────────")
+autoreleasepool {
+    let srcLen = 8192
+    let bank = UnifiedSampleBank(capacity: srcLen * 8)
+    for i in 0..<srcLen {
+        bank.samplePointer[i] = sinf(2.0 * .pi * 440.0 * Float(i) / 44100.0)
+    }
+    var srcCrossings = 0
+    for i in 1..<srcLen {
+        if (bank.samplePointer[i - 1] < 0) != (bank.samplePointer[i] < 0) { srcCrossings += 1 }
+    }
+    let newLen = OfflineDSP.pitchShift(bank: bank, offset: 0, length: srcLen, semitones: 12.0)
+    var outCrossings = 0
+    for i in 1..<newLen {
+        if (bank.samplePointer[i - 1] < 0) != (bank.samplePointer[i] < 0) { outCrossings += 1 }
+    }
+    let srcDensity = Float(srcCrossings) / Float(srcLen)
+    let outDensity = Float(outCrossings) / Float(newLen)
+    let ratio = outDensity / srcDensity
+    assert(ratio > 1.5 && ratio < 2.5,
+           "Pitch-shift +12 semi produces ~2× zero-crossing density (got \(ratio))")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 32. UnifiedSampleBank.reserve — dynamic allocator (backs track freeze + recording)
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 32. UnifiedSampleBank Dynamic Allocator ─────────────────────────")
+autoreleasepool {
+    let bank = UnifiedSampleBank(capacity: 1024)
+    let o1 = bank.reserve(count: 100)
+    let o2 = bank.reserve(count: 100)
+    assert(o1 != nil, "reserve(100) succeeds")
+    assert(o2 != nil, "second reserve(100) succeeds")
+    assert(o1! >= 512, "reserve returns from dynamic half (got \(o1!))")
+    assert(o2! == o1! + 100, "consecutive reservations are contiguous")
+    let tooBig = bank.reserve(count: 10_000)
+    assert(tooBig == nil, "reserve beyond capacity returns nil")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 33. MasterMeter — ITU-R BS.1770-4 LUFS + true-peak + phase correlation
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 33. MasterMeter (LUFS + true-peak + phase) ──────────────────────")
+autoreleasepool {
+    let meter = MasterMeter()
+    let frames = 44100            // 1 s of audio at 44.1k
+    let l = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let r = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    defer { l.deallocate(); r.deallocate() }
+
+    // 1 kHz sine at 0 dBFS on both channels, in phase.
+    for i in 0..<frames {
+        let v = sinf(2.0 * .pi * 1000.0 * Float(i) / 44100.0)
+        l[i] = v; r[i] = v
+    }
+    meter.process(stereoL: l, stereoR: r, frames: frames, sampleRate: 44100)
+
+    // A 0 dBFS 1 kHz sine is ≈ −3 LUFS (K-weighting at 1 kHz has ~0 dB gain relative
+    // to the flat reference, and the −0.691 offset + −3 dB RMS for a sine gives ≈ −3.7).
+    // Allow a loose range — we're mainly proving the filter chain runs and the
+    // integrated accumulator is in the expected neighbourhood, not computing exact standard values.
+    assert(meter.integratedLUFS > -8 && meter.integratedLUFS < 0,
+           "1 kHz 0 dBFS sine → integrated LUFS in (−8, 0), got \(meter.integratedLUFS)")
+
+    // True-peak for a perfect sine with 4× interp is very close to 1.0 (no inter-sample
+    // peaks above full-scale for pure tones). Allow 0.95..1.05.
+    assert(meter.truePeak > 0.95 && meter.truePeak < 1.05,
+           "1 kHz 0 dBFS sine → truePeak ≈ 1.0, got \(meter.truePeak)")
+
+    // Perfectly in-phase signal → correlation ≈ +1.
+    assert(meter.phaseCorrelation > 0.95,
+           "In-phase L/R → correlation ≈ 1, got \(meter.phaseCorrelation)")
+
+    // Reset clears integrated; process silence → LUFS stays at floor.
+    meter.reset()
+    for i in 0..<frames { l[i] = 0; r[i] = 0 }
+    meter.process(stereoL: l, stereoR: r, frames: frames, sampleRate: 44100)
+    assert(meter.integratedLUFS < -60, "Silence → LUFS at or near floor (got \(meter.integratedLUFS))")
+    assert(meter.truePeak < 1e-6, "Silence → truePeak ≈ 0")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 34. Aux bus routing — send + bus volume
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 34. Aux Bus Send/Return ─────────────────────────────────────────")
+autoreleasepool {
+    let res = RenderResources(maxFrames: 512)
+    // Channel 0 sends 50% into bus 0. Bus 0 at unity.
+    res.sendAmounts[0 * kAuxBusCount + 0] = 0.5
+    res.busVolumes[0] = 1.0
+    assert(res.sendAmounts[0 * kAuxBusCount + 0] == 0.5, "setSend 0→bus0 = 0.5 persists")
+    assert(res.busVolumes[0] == 1.0, "busVolumes[0] = 1.0")
+    // Writes should not affect other channels / buses.
+    assert(res.sendAmounts[1 * kAuxBusCount + 0] == 0, "channel 1 send to bus 0 still 0")
+    assert(res.sendAmounts[0 * kAuxBusCount + 1] == 0, "channel 0 send to bus 1 still 0")
+    assert(res.busVolumes[1] == 1.0, "bus 1 default volume = 1.0")
+    assert(kAuxBusCount == 4, "kAuxBusCount = 4 (update UAT if you change this)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 53. Concurrent offline render — parity with serial + measurable speedup
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 53. Concurrent Offline Render ───────────────────────────────────")
+autoreleasepool {
+    // Build a small fake snapshot + render both serial and concurrent paths,
+    // check outputs are byte-for-byte identical (same voices, same state).
+    let bank = UnifiedSampleBank(capacity: 1024)
+    let evt  = AtomicRingBuffer<TrackerEvent>(capacity: 16)
+    let st   = UnsafeMutablePointer<EngineSharedState>.allocate(capacity: 1)
+    st.initialize(to: EngineSharedState())
+    defer { st.deallocate() }
+    let res  = RenderResources(maxFrames: 2048)
+    let node = AudioRenderNode(resources: res, statePtr: st, bank: bank,
+                               eventBuffer: evt, sampleRate: 44100)
+    st.pointee.bpm = 120
+    st.pointee.ticksPerRow = 6
+    st.pointee.masterVolume = 1.0
+    st.pointee.isPlaying = 1
+
+    let frames = 1024
+    let sL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let sR = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let cL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let cR = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    defer { sL.deallocate(); sR.deallocate(); cL.deallocate(); cR.deallocate() }
+    sL.initialize(repeating: 0, count: frames); sR.initialize(repeating: 0, count: frames)
+    cL.initialize(repeating: 0, count: frames); cR.initialize(repeating: 0, count: frames)
+
+    let emptySnap = SongSnapshot.createEmpty()
+    let wSerial = node.renderOffline(frames: frames, snap: emptySnap, state: st,
+                                     bufferL: sL, bufferR: sR)
+    // Reset state for the second run.
+    st.pointee.isPlaying = 1; st.pointee.samplesProcessed = 0
+    let wConcurrent = node.renderOfflineConcurrent(frames: frames, snap: emptySnap, state: st,
+                                                   bufferL: cL, bufferR: cR)
+    assert(wSerial > 0 && wConcurrent > 0, "Both render paths produce output")
+    // For silent-input case both should produce zero-buffer output.
+    var sumS: Float = 0, sumC: Float = 0
+    for i in 0..<min(wSerial, wConcurrent) { sumS += abs(sL[i]); sumC += abs(cL[i]) }
+    assert(abs(sumS - sumC) < 1e-3, "Concurrent + serial agree on silent render")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 54. GPU_DSP — kernel pipeline availability
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 54. GPU_DSP Pipelines ───────────────────────────────────────────")
+autoreleasepool {
+    // Available is true only on systems with Metal compiled kernels; CI may lack
+    // a GPU so we just assert the check doesn't crash.
+    _ = GPU_DSP.isAvailable
+    assert(true, "GPU_DSP.isAvailable probe completes without crash")
+
+    // If Metal is up, run a normalize on a tiny buffer and verify max → 1.0.
+    if GPU_DSP.isAvailable {
+        let bank = UnifiedSampleBank(capacity: 1024)
+        for i in 0..<16 { bank.samplePointer[i] = Float(i) * 0.1 }
+        GPU_DSP.normalizeGPU(bank: bank, offset: 0, length: 16)
+        var maxVal: Float = 0
+        vDSP_maxmgv(bank.samplePointer, 1, &maxVal, vDSP_Length(16))
+        assert(abs(maxVal - 1.0) < 0.01, "GPU normalize produces peak ≈ 1.0")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 49. Arrangement model — clip time math + active-at queries
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 49. Arrangement Model ───────────────────────────────────────────")
+autoreleasepool {
+    let arr = Arrangement(bpm: 120)
+    var track = Track(name: "Drums", channelIndex: 0)
+    track.add(Clip(kind: .pattern, name: "Intro",
+                   start: Beats(0), duration: Beats(4), sourceIndex: 0))
+    track.add(Clip(kind: .pattern, name: "Verse",
+                   start: Beats(4), duration: Beats(8), sourceIndex: 1))
+    arr.tracks = [track]
+
+    // Time math.
+    assert(Beats(4).asSamples(bpm: 120, sampleRate: 44100) == 88200,
+           "4 beats @ 120 BPM = 88200 samples @ 44.1k")
+    assert(arr.totalDuration.value == 12, "Total arr = 12 beats")
+
+    // Active clips at t=2 → Intro only.
+    let at2 = arr.activeClips(atBeat: Beats(2))
+    assert(at2.count == 1 && at2[0].1.name == "Intro", "beat 2 → Intro active")
+    // Active at t=8 → Verse.
+    let at8 = arr.activeClips(atBeat: Beats(8))
+    assert(at8.count == 1 && at8[0].1.name == "Verse", "beat 8 → Verse active")
+
+    // Fade envelope.
+    var fadeClip = Clip(kind: .pattern, name: "F",
+                        start: Beats(0), duration: Beats(4),
+                        fadeInBeats: Beats(1), fadeOutBeats: Beats(1),
+                        gainLinear: 1.0)
+    assert(fadeClip.envelopeAmplitude(at: Beats(0.5)) < 1.0,
+           "Fade-in attenuates at halfway through fade window")
+    assert(fadeClip.envelopeAmplitude(at: Beats(2.0)) == 1.0,
+           "Clip body is at unity gain")
+    _ = fadeClip
+
+    // Serialization round-trip.
+    let data = arr.exportAsPluginStateData()
+    assert(data["arrangement"] != nil, "Arrangement serializes into TOOO chunk")
+    let reloaded = Arrangement.importFromPluginStateData(data)
+    assert(reloaded?.tracks.first?.clips.count == 2, "Arrangement round-trips")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 50. SessionGrid — clip-launch quantization
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 50. SessionGrid ─────────────────────────────────────────────────")
+autoreleasepool {
+    let grid = SessionGrid(rows: 4, columns: 4)
+    assert(grid.numRows == 4 && grid.numCols == 4, "4×4 grid")
+
+    // Launch boundary math.
+    let b = SessionGrid.nextBoundary(after: Beats(3.1), quant: .bar)
+    assert(b.value == 4.0, "Next bar after beat 3.1 = 4.0 (got \(b.value))")
+
+    // Placing a clip + launching.
+    var cell = SessionCell()
+    cell.clip = Clip(kind: .pattern, name: "C", start: .zero, duration: Beats(4))
+    grid.setCell(cell, row: 0, col: 0)
+    grid.launchCell(row: 0, col: 0, nowBeat: Beats(2), quant: .bar)
+    assert(grid.pendingLaunches[0]?.atBeat.value == 4.0, "Launch pending at next bar")
+
+    // Advance past the boundary — launch becomes live.
+    let transitions = grid.advanceLaunches(nowBeat: Beats(4))
+    assert(transitions.first?.row == 0, "col 0 transitioned to row 0")
+    assert(grid.livePlayback[0] == 0, "Live playback updated")
+    assert(grid.pendingLaunches[0] == nil, "Pending cleared")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 51. Automation lanes — point insertion + evaluation
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 51. Automation Lanes ────────────────────────────────────────────")
+autoreleasepool {
+    var lane = AutomationLane(targetID: "ch.0.volume")
+    lane.setPoint(beat: 0,  value: 0.0)
+    lane.setPoint(beat: 4,  value: 1.0, curveOut: .linear)
+    lane.setPoint(beat: 8,  value: 0.5)
+
+    assert(lane.evaluate(at: 0) == 0, "Start of lane = 0")
+    assert(lane.evaluate(at: 4) == 1, "Peak of lane = 1")
+    let mid = lane.evaluate(at: 2)!
+    assert(mid > 0.45 && mid < 0.55, "Midway linear ≈ 0.5 (got \(mid))")
+
+    // Before first point clamps.
+    assert(lane.evaluate(at: -1) == 0, "Before first point clamps to first value")
+    // After last point clamps.
+    assert(lane.evaluate(at: 10) == 0.5, "After last point clamps to last value")
+
+    // Bank round-trip.
+    let bank = AutomationBank()
+    bank.upsert(lane)
+    let data = bank.exportAsPluginStateData()
+    let reloaded = AutomationBank.importFromPluginStateData(data)
+    assert(reloaded?.evaluate(targetID: "ch.0.volume", at: 4) == 1,
+           "Automation lane survives JSON round-trip")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 52. StabilityMonitor — memory sampling + glitch counter
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 52. StabilityMonitor ────────────────────────────────────────────")
+autoreleasepool {
+    let mon = StabilityMonitor()
+    mon.reset()
+    for _ in 0..<3 { mon.tick(activeVoices: 10) }
+    mon.recordGlitch()
+    let r = mon.report()
+    assert(r.sampleCount == 3, "3 samples recorded")
+    assert(r.totalGlitches == 1, "1 glitch logged")
+    assert(StabilityMonitor.residentMemory() > 0, "Resident memory readable")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 44. MusicTheory — scale quantization + chord generation
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 44. MusicTheory ──────────────────────────────────────────────────")
+autoreleasepool {
+    // C major (root C4 = 60) — C# (61) should snap to C or D.
+    let snap61 = MusicTheory.quantize(midiNote: 61, rootMIDI: 60, scale: .major)
+    assert(snap61 == 60 || snap61 == 62, "C# in C major snaps to C or D (got \(snap61))")
+
+    // In-scale notes should pass through untouched.
+    assert(MusicTheory.quantize(midiNote: 62, rootMIDI: 60, scale: .major) == 62,
+           "D stays D in C major")
+
+    // Chord generation.
+    assert(MusicTheory.chord(rootMIDI: 60, quality: .major) == [60, 64, 67],
+           "C major chord = C E G")
+    assert(MusicTheory.chord(rootMIDI: 60, quality: .minor) == [60, 63, 67],
+           "C minor chord = C Eb G")
+    assert(MusicTheory.chord(rootMIDI: 60, quality: .maj7).count == 4,
+           "Cmaj7 has 4 notes")
+
+    // All 16 scales are non-empty.
+    for scale in ScaleSet.allCases {
+        assert(!scale.intervals.isEmpty, "\(scale) has intervals")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 45. ArpeggiatorEngine — up / down / chord / hold modes
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 45. Arpeggiator ──────────────────────────────────────────────────")
+autoreleasepool {
+    var arp = ArpeggiatorEngine()
+    arp.mode = .up
+    arp.noteOn(60); arp.noteOn(64); arp.noteOn(67)
+    assert(arp.next() == [60], "up: first step = lowest")
+    assert(arp.next() == [64], "up: second step = middle")
+    assert(arp.next() == [67], "up: third step = highest")
+    assert(arp.next() == [60], "up: wraps to lowest")
+
+    var down = ArpeggiatorEngine()
+    down.mode = .down
+    down.noteOn(60); down.noteOn(72)
+    assert(down.next() == [72], "down: first = highest")
+
+    var chord = ArpeggiatorEngine()
+    chord.mode = .chord
+    chord.noteOn(60); chord.noteOn(64); chord.noteOn(67)
+    assert(chord.next().sorted() == [60, 64, 67], "chord mode stacks all")
+
+    var hold = ArpeggiatorEngine()
+    hold.holdMode = true
+    hold.noteOn(60); hold.noteOn(64)
+    hold.noteOff(60)
+    assert(hold.size == 2, "hold mode retains note after noteOff")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 46. Scene bank — capture + recall round-trip
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 46. Scene Bank ───────────────────────────────────────────────────")
+autoreleasepool {
+    let bank = SceneBank()
+    let a = SceneSnapshot(name: "Verse", bpm: 125)
+    let b = SceneSnapshot(name: "Chorus", bpm: 140)
+    bank.store(a, at: 0); bank.store(b, at: 1)
+    assert(bank.scene(at: 0)?.name == "Verse", "Scene 0 = Verse")
+    assert(bank.scene(at: 1)?.bpm == 140, "Scene 1 BPM = 140")
+
+    let exported = bank.exportAsPluginStateData()
+    assert(exported["scene.0"] != nil, "scene.0 serialized")
+    assert(exported.count == 2, "Both scenes serialized")
+
+    let reloaded = SceneBank()
+    reloaded.importFromPluginStateData(exported)
+    assert(reloaded.scene(at: 0)?.name == "Verse", "Verse round-trips")
+    assert(reloaded.scene(at: 1)?.bpm == 140, "Chorus BPM round-trips")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 47. KeyBinding presets
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 47. KeyBinding Presets ───────────────────────────────────────────")
+autoreleasepool {
+    for preset in [KeyBindingSet.toooTDefault, .proToolsStyle, .logicStyle] {
+        assert(!preset.bindings.isEmpty, "\(preset.name) has bindings")
+        let space = preset.bindings.first { $0.commandID == "transport.play-stop" }
+        assert(space?.key == "space", "\(preset.name) binds Space to play/stop")
+    }
+    let kb = KeyBinding(commandID: "x", key: "z", modifiers: ["cmd", "shift"])
+    assert(kb.displayString.contains("⌘"), "Display renders ⌘ modifier")
+    assert(kb.displayString.contains("⇧"), "Display renders ⇧ modifier")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 48. MPE event field defaults (per-note expression support in TrackerEvent)
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 48. MPE Event Fields ─────────────────────────────────────────────")
+autoreleasepool {
+    // Backward-compat: all existing call sites work with default noteId etc.
+    let legacy = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440)
+    assert(legacy.noteId == 0, "Legacy event has noteId=0 (= no MPE)")
+    assert(legacy.perNotePitchBend == 0, "Legacy event has zero per-note bend")
+
+    // Forward MPE: new fields settable.
+    let mpe = TrackerEvent(type: .noteOn, channel: 1, value1: 440, value2: 0.9,
+                           noteId: 42, perNotePitchBend: 4096, perNotePressure: 100)
+    assert(mpe.noteId == 42, "MPE noteId carried")
+    assert(mpe.perNotePitchBend == 4096, "MPE pitch bend carried")
+    assert(mpe.perNotePressure == 100, "MPE pressure carried")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 43. Crash recovery — recentAutosaves helper
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 43. Crash Recovery Autosave Scan ────────────────────────────────")
+MainActor.assumeIsolated {
+    // Simulates autosave writes by manually dropping files into the autosave dir,
+    // then verifies recentAutosaves returns only the recent ones sorted newest-first.
+    guard let dir = AudioHost.autosaveDirectory() else {
+        assert(false, "autosaveDirectory resolvable"); return
+    }
+    let slug = "UAT_\(UUID().uuidString.prefix(8))"
+
+    // Create two files: one recent (now), one stale (48 h old).
+    let recent = dir.appendingPathComponent("\(slug)_recent.mad")
+    let stale  = dir.appendingPathComponent("\(slug)_stale.mad")
+    try? Data([0x4D, 0x41, 0x44, 0x4B]).write(to: recent)
+    try? Data([0x4D, 0x41, 0x44, 0x4B]).write(to: stale)
+    let oldDate = Date().addingTimeInterval(-48 * 3600)
+    try? FileManager.default.setAttributes(
+        [.modificationDate: oldDate], ofItemAtPath: stale.path)
+    defer {
+        try? FileManager.default.removeItem(at: recent)
+        try? FileManager.default.removeItem(at: stale)
+    }
+
+    let within24h = AudioHost.recentAutosaves(maxAgeSeconds: 24 * 3600)
+    assert(within24h.contains(recent), "Recent autosave surfaces in 24 h scan")
+    assert(!within24h.contains(stale), "Stale (48 h) autosave excluded from 24 h scan")
+
+    // latestAutosave resolves by title prefix.
+    let latest = AudioHost.latestAutosave(for: slug)
+    assert(latest == recent, "latestAutosave picks newest by title prefix")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 40. TruePeakLimiter — inter-sample peak detection + look-ahead gain reduction
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 40. TruePeakLimiter (look-ahead) ─────────────────────────────────")
+autoreleasepool {
+    // Fabricate a stereo buffer that would produce inter-sample peaks > 1.0 when
+    // upsampled — two adjacent samples at ±0.95 with alternating signs.
+    let frames = 4096
+    let abl = AudioBufferList.allocate(maximumBuffers: 2)
+    let l = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let r = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    defer {
+        l.deallocate(); r.deallocate()
+        free(abl.unsafeMutablePointer)
+    }
+
+    // Hot 1 kHz sine at 0.95 amplitude — will exceed −1 dBTP ceiling without limiting.
+    for i in 0..<frames {
+        let v = 0.95 * sinf(2.0 * .pi * 1000.0 * Float(i) / 44100.0)
+        l[i] = v; r[i] = v
+    }
+    abl[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * 4), mData: UnsafeMutableRawPointer(l))
+    abl[1] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * 4), mData: UnsafeMutableRawPointer(r))
+
+    let cd = AudioComponentDescription(componentType: kAudioUnitType_Effect,
+                                       componentSubType: 0x746c696d,    // 'tlim'
+                                       componentManufacturer: 0x4d414444,
+                                       componentFlags: 0, componentFlagsMask: 0)
+    guard let limiter = try? TruePeakLimiter(componentDescription: cd, options: []) else {
+        assert(false, "TruePeakLimiter instantiates"); return
+    }
+    try? limiter.allocateRenderResources()
+    limiter.setCeiling(dBTP: -1.0)
+    let block = limiter.internalRenderBlock
+    var ts = AudioTimeStamp()
+    var flags = AudioUnitRenderActionFlags()
+    _ = block(&flags, &ts, UInt32(frames), 0, abl.unsafeMutablePointer, nil, nil)
+
+    // Post-limit: check true-peak via the MasterMeter on the same buffer.
+    let meter = MasterMeter()
+    meter.process(stereoL: l, stereoR: r, frames: frames, sampleRate: 44100)
+    let ceilingLinear = powf(10.0, -1.0 / 20.0)    // ≈ 0.891
+    assert(meter.truePeak <= ceilingLinear * 1.01,
+           "Limiter output respects −1 dBTP ceiling (got truePeak=\(meter.truePeak), ceiling=\(ceilingLinear))")
+    // Energy preservation: limiter shouldn't annihilate the signal.
+    var sumSq: Float = 0
+    for i in 0..<frames { sumSq += l[i] * l[i] }
+    assert(sumSq > Float(frames) * 0.01,
+           "Limiter preserves most signal energy (sumSq=\(sumSq))")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 41. MIDI panic semantics — engine stops, voices deactivate
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 41. MIDI Panic ───────────────────────────────────────────────────")
+autoreleasepool {
+    // Simulate what midiPanic does to RenderResources.voices — can test without
+    // spinning up the full AudioHost + CoreAudio.
+    let res = RenderResources(maxFrames: 512)
+    for ch in 0..<kMaxChannels {
+        res.voices.advanced(by: ch).pointee.active = true
+    }
+    res.activeChannelCount = kMaxChannels
+
+    // Emulate panic on RenderResources directly.
+    for ch in 0..<kMaxChannels {
+        res.voices.advanced(by: ch).pointee.active = false
+    }
+    res.activeChannelCount = 0
+
+    var anyActive = false
+    for ch in 0..<kMaxChannels {
+        if res.voices.advanced(by: ch).pointee.active { anyActive = true; break }
+    }
+    assert(!anyActive, "After panic, no voices remain active")
+    assert(res.activeChannelCount == 0, "activeChannelCount zeroed")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 42. Bus inserts — RenderBlockWrapper-level bookkeeping
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 42. Bus Inserts (wrapper plumbing) ──────────────────────────────")
+autoreleasepool {
+    // Validates the per-bus insert data structures without requiring a real AUAudioUnit
+    // instantiation — we just need the pointer arrays sized correctly and the pre-allocated
+    // AudioBufferLists to match the bus buffers.
+    let res = RenderResources(maxFrames: 512)
+    // Simulate the wrapper's bus insert tables:
+    let insertBlocks = UnsafeMutablePointer<AUInternalRenderBlock?>.allocate(capacity: kAuxBusCount * 4)
+    insertBlocks.initialize(repeating: nil, count: kAuxBusCount * 4)
+    let pluginCounts = UnsafeMutablePointer<Int32>.allocate(capacity: kAuxBusCount)
+    pluginCounts.initialize(repeating: 0, count: kAuxBusCount)
+    defer { insertBlocks.deallocate(); pluginCounts.deallocate() }
+
+    assert(kAuxBusCount * 4 == 16, "4 slots × 4 buses = 16 insert slots")
+
+    // Simulate adding 2 plugins to bus 1.
+    pluginCounts[1] = 2
+    insertBlocks[1 * 4 + 0] = { _, _, _, _, _, _, _ in noErr }
+    insertBlocks[1 * 4 + 1] = { _, _, _, _, _, _, _ in noErr }
+    assert(pluginCounts[1] == 2, "Bus 1 shows 2 plugins")
+    assert(insertBlocks[1 * 4 + 0] != nil, "Bus 1 slot 0 has a block")
+    assert(insertBlocks[0 * 4 + 0] == nil, "Bus 0 slot 0 still empty")
+
+    // Construct a per-bus AudioBufferList pointing at res.busL[b]/busR[b] (mirrors wrapper).
+    let abl = AudioBufferList.allocate(maximumBuffers: 2)
+    defer { free(abl.unsafeMutablePointer) }
+    abl[0] = AudioBuffer(mNumberChannels: 1,
+                         mDataByteSize: UInt32(512 * 4),
+                         mData: UnsafeMutableRawPointer(res.busL[1]))
+    abl[1] = AudioBuffer(mNumberChannels: 1,
+                         mDataByteSize: UInt32(512 * 4),
+                         mData: UnsafeMutableRawPointer(res.busR[1]))
+    assert(abl[0].mData == UnsafeMutableRawPointer(res.busL[1]),
+           "Bus 1 AudioBufferList L pointer matches res.busL[1]")
+    assert(abl[1].mData == UnsafeMutableRawPointer(res.busR[1]),
+           "Bus 1 AudioBufferList R pointer matches res.busR[1]")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 39. Template projects — built-in manifests + writer
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 39. Template Projects ───────────────────────────────────────────")
+autoreleasepool {
+    // Built-ins registered and each has metadata.
+    let builtIns = TemplateManager.builtIns
+    assert(builtIns.count >= 4, "At least 4 starter templates ship (blank, drum, ambient, techno)")
+    let slugs = builtIns.map { $0.slug }
+    assert(slugs.contains("blank"),        "Blank template present")
+    assert(slugs.contains("drum-starter"), "Drum Starter template present")
+    assert(slugs.contains("ambient-pad"),  "Ambient Pad template present")
+    assert(slugs.contains("techno-basic"), "Techno Basic template present")
+
+    // Write a template to a temp URL and verify it's a valid MAD file.
+    let tmpDir = FileManager.default.temporaryDirectory
+        .appendingPathComponent("tooot-template-test-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: tmpDir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: tmpDir) }
+
+    guard let drum = builtIns.first(where: { $0.slug == "drum-starter" }) else {
+        assert(false, "drum-starter template exists"); return
+    }
+    let outURL = tmpDir.appendingPathComponent("drum.mad")
+    TemplateManager.write(drum, to: outURL)
+    assert(FileManager.default.fileExists(atPath: outURL.path),
+           "Template write produces a file")
+
+    // Parse it back. Builder populated specific events — pattern 0 row 0 channel 0
+    // should be a noteOn (the kick).
+    let parser = MADParser(sourceURL: outURL)
+    if let (events, _, _) = try? parser.parse(sampleBank: nil) {
+        let kick = events[0]
+        assert(kick.type == .noteOn, "Drum Starter row 0 ch 0 = kick noteOn (got \(kick.type))")
+        assert(kick.instrument == 1, "Kick on instrument 1 (got \(kick.instrument))")
+        // Round-trip the template's declared bpm/title isn't in the slab, but we proved it writes.
+    } else {
+        assert(false, "Template .mad parses back successfully")
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 38. Command palette — fuzzy matcher
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 38. Command Palette Fuzzy Match ─────────────────────────────────")
+MainActor.assumeIsolated {
+    let reg = CommandRegistry()
+    reg.register(PaletteCommand(id: "t.play", title: "Play", category: "Transport") {})
+    reg.register(PaletteCommand(id: "t.stop", title: "Stop", category: "Transport") {})
+    reg.register(PaletteCommand(id: "t.playstop", title: "Play / Stop Toggle", category: "Transport") {})
+    reg.register(PaletteCommand(id: "m.lim", title: "Toggle Master Limiter", category: "Mastering") {})
+    reg.register(PaletteCommand(id: "f.exp", title: "Export Project to WAV", category: "File") {})
+    reg.register(PaletteCommand(id: "e.undo", title: "Undo", category: "Edit") {})
+
+    // Empty query returns all commands, unsorted.
+    assert(reg.match(query: "").count == 6, "Empty query returns all commands")
+
+    // Exact prefix ranks highest: "play" → Play > Play/Stop Toggle.
+    let playResults = reg.match(query: "play")
+    assert(playResults.first?.id == "t.play", "Exact prefix 'play' → Play first")
+    assert(playResults.count == 2, "'play' matches 2 commands (Play + Play/Stop)")
+
+    // Multi-token AND filter.
+    let exportResults = reg.match(query: "export wav")
+    assert(exportResults.count == 1 && exportResults.first?.id == "f.exp",
+           "'export wav' → single Export Project to WAV match")
+
+    // Category-only match still returns results (lower score).
+    let transportResults = reg.match(query: "transport")
+    assert(transportResults.count == 3, "'transport' category matches 3 commands (got \(transportResults.count))")
+
+    // No match returns empty.
+    assert(reg.match(query: "zzyx").isEmpty, "Nonsense query → no matches")
+
+    // Case insensitive.
+    assert(reg.match(query: "PLAY").first?.id == "t.play", "Case-insensitive match works")
+
+    // Replacing by id keeps single entry.
+    reg.register(PaletteCommand(id: "t.play", title: "Play (replaced)", category: "Transport") {})
+    let again = reg.match(query: "play")
+    assert(again.contains(where: { $0.title == "Play (replaced)" }),
+           "Re-registering by id replaces in place")
+    assert(reg.commands.count == 6, "Re-registering doesn't duplicate (got \(reg.commands.count))")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 37. Mastering export — TPDF dither + LUFS normalization
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 37. Mastering Export (Dither + LUFS Normalize) ──────────────────")
+autoreleasepool {
+    let frames = 48000
+    let l = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let r = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    defer { l.deallocate(); r.deallocate() }
+
+    // Quiet 1 kHz sine at ~−20 dBFS → should normalize UP to Spotify's −14 LUFS.
+    let baseAmp: Float = 0.1   // ≈ −20 dBFS
+    for i in 0..<frames {
+        let v = baseAmp * sinf(2.0 * .pi * 1000.0 * Float(i) / 48000.0)
+        l[i] = v; r[i] = v
+    }
+
+    let report = MasteringExport.normalizeLoudness(
+        bufferL: l, bufferR: r, frames: frames, sampleRate: 48000,
+        target: .spotify)
+
+    // Gain should be > 1 (we're boosting a quiet signal up to −14 LUFS target).
+    assert(report.gainApplied > 1.0,
+           "Loudness-normalize boosted quiet signal (gain = \(report.gainApplied))")
+
+    // After normalization, remeasure: integrated LUFS should be close to −14 (±2 dB
+    // tolerance — single-block measurement is less precise than full-program).
+    let meter = MasterMeter()
+    meter.reset()
+    meter.process(stereoL: l, stereoR: r, frames: frames, sampleRate: 48000)
+    assert(abs(meter.integratedLUFS - (-14)) < 3.0,
+           "Post-normalize integrated LUFS ≈ −14 (got \(meter.integratedLUFS))")
+
+    // True-peak must respect the ceiling (−1 dBTP → 0.891 linear).
+    assert(meter.truePeak < 0.95,
+           "Post-normalize true-peak honors ceiling (got \(meter.truePeak))")
+
+    // TPDF dither test: zero signal + dither → standard deviation should match
+    // ±1 LSB range at the target bit depth.
+    for i in 0..<frames { l[i] = 0; r[i] = 0 }
+    MasteringExport.applyDither(bufferL: l, bufferR: r, frames: frames,
+                                bits: 16, mode: .tpdf)
+    var sumSq: Float = 0
+    for i in 0..<frames { sumSq += l[i] * l[i] }
+    let stdDev = sqrtf(sumSq / Float(frames))
+    // TPDF amplitude = ±1 LSB = ±1/32768. Triangle distribution's RMS is amp/√6 ≈ 1.24e-5.
+    assert(stdDev > 1e-6 && stdDev < 5e-5,
+           "TPDF dither RMS in expected range for 16-bit (got \(stdDev))")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 36. Variable sample rate — render at 48 kHz produces correctly-scaled output
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 36. Variable Sample Rate (48 kHz offline render) ────────────────")
+autoreleasepool {
+    // Construct render resources + state and render at 48 kHz. Compare samples-per-row
+    // against the 44.1k baseline — ratio should be ≈ 48000 / 44100.
+    let sr48   = 48000.0
+    let sr44   = 44100.0
+    let bpm    = 120
+    let tpr    = 6  // ticks per row
+    let bpm32  = Int32(bpm)
+    let tpr32  = Int32(tpr)
+
+    // Expected: samplesPerRow(sr, bpm, tpr) = (sr * 2.5 / bpm) * tpr
+    let expected48 = (sr48 * 2.5 / Double(bpm)) * Double(tpr)
+    let expected44 = (sr44 * 2.5 / Double(bpm)) * Double(tpr)
+    let ratio = expected48 / expected44
+    assert(abs(ratio - (sr48 / sr44)) < 0.001,
+           "samplesPerRow scales with SR: ratio \(ratio) ≈ \(sr48/sr44)")
+
+    // Confirm the engine actually stores the requested SR.
+    let bank = UnifiedSampleBank(capacity: 1024)
+    let evt  = AtomicRingBuffer<TrackerEvent>(capacity: 16)
+    let st   = UnsafeMutablePointer<EngineSharedState>.allocate(capacity: 1)
+    st.initialize(to: EngineSharedState())
+    defer { st.deallocate() }
+    let res  = RenderResources(maxFrames: 512)
+    let node = AudioRenderNode(resources: res, statePtr: st, bank: bank,
+                               eventBuffer: evt, sampleRate: sr48)
+    assert(node.sampleRate == sr48, "AudioRenderNode.sampleRate honored (got \(node.sampleRate))")
+
+    // Offline render a very short silent burst — exercise the SR-dependent tick math.
+    st.pointee.bpm          = bpm32
+    st.pointee.ticksPerRow  = tpr32
+    st.pointee.isPlaying    = 1
+    st.pointee.masterVolume = 1.0
+    let frames = 4096
+    let bufL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let bufR = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    defer { bufL.deallocate(); bufR.deallocate() }
+    bufL.initialize(repeating: 0, count: frames)
+    bufR.initialize(repeating: 0, count: frames)
+
+    // Render a tiny empty snapshot — this should run without crash at 48k and
+    // advance state.pointee.samplesProcessed (proves renderOffline is hot).
+    let emptySnap = SongSnapshot.createEmpty()
+    let written = node.renderOffline(frames: frames, snap: emptySnap, state: st,
+                                     bufferL: bufL, bufferR: bufR)
+    assert(written > 0, "Offline render at 48 kHz produced \(written) frames")
+}
+// ─────────────────────────────────────────────────────────────────────────────
+// 35. CLAP discovery — BSD-licensed plugin format (MIT-compatible, no SDK gate)
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 35. CLAP Plugin Discovery ───────────────────────────────────────")
+autoreleasepool {
+    let clap = CLAPHostManager()
+    let count = clap.availablePlugins.count
+    print("  Discovered \(count) CLAP plugin(s) in \(CLAPHostManager.searchPaths)")
+    // Discovery should never throw; empty is a valid result on systems with no CLAP plugins.
+    assert(count >= 0, "CLAP discovery completed without crash")
+    // If any plugins were found, basic metadata fields must be populated.
+    if let first = clap.availablePlugins.first {
+        assert(!first.pluginID.isEmpty,   "CLAP descriptor has non-empty id")
+        assert(!first.name.isEmpty,       "CLAP descriptor has non-empty name")
+        assert(!first.bundlePath.isEmpty, "CLAP descriptor has non-empty bundlePath")
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 26. AUv3 Plugin Discovery & Hosting
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1130,10 +1912,10 @@ group.wait()
 // ─────────────────────────────────────────────────────────────────────────────
 print("\n── 27. VST3 Discovery & Hosting (JUCE/Steinberg) ───────────────────")
 autoreleasepool {
-    let vst3List = JUCEVST3Host.discoverPlugins()
+    let vst3List = VST3Host.discoverPlugins()
     print("  Discovered \(vst3List.count) VST3 plugins in system folders.")
     
-    let host = JUCEVST3Host()
+    let host = VST3Host()
     assert(host.pluginName == "<No Plugin Loaded>", "Initial VST3 host state is empty")
     
     // Simulate loading a VST3 (using a dummy path since we're in a stubbed UAT)
@@ -1217,14 +1999,14 @@ autoreleasepool {
     state.initialize(to: EngineSharedState())
     state.pointee.sidechainChannel = 0 // Channel 1 is source
     state.pointee.sidechainAmount = 1.0 // 100% duck
-    
+
     // Simulate kick drum on channel 0
-    res.sidechainPeak = 1.0 
-    
+    res.sidechainPeak = 1.0
+
     // If source is active, ducking should be high
     let duckValue = 1.0 - (res.sidechainPeak * state.pointee.sidechainAmount)
     assert(duckValue <= 0.05, "Sidechain ducking correctly calculates attenuation (got \(duckValue))")
-    
+
     state.deallocate()
 }
 

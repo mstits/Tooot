@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-uat:
+    name: Build + UAT (macOS Apple Silicon)
+    runs-on: macos-15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode_16.0.app || sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Build (debug, strict concurrency)
+        run: swift build 2>&1 | tee build.log
+
+      - name: Fail on Swift 6 concurrency warnings
+        run: |
+          if grep -E 'warning:.*concurrency' build.log; then
+            echo "::error::Swift concurrency warnings present — see log above."
+            exit 1
+          fi
+
+      - name: Run UAT suite
+        run: .build/arm64-apple-macosx/debug/UATRunner | tee uat.log
+
+      - name: Gate on UAT results (must have ≥100 passes and 0 fails)
+        run: |
+          PASSES=$(grep -cE '^✅' uat.log || echo 0)
+          FAILS=$(grep -cE '^❌' uat.log || echo 0)
+          echo "UAT: $PASSES passes, $FAILS fails"
+          if [ "$FAILS" -gt 0 ]; then
+            echo "::error::UAT regressions detected."
+            exit 1
+          fi
+          if [ "$PASSES" -lt 100 ]; then
+            echo "::error::Expected at least 100 UAT assertions; only $PASSES ran. Possible truncation or setup regression."
+            exit 1
+          fi
+
+      - name: Run XCTest suite (if present)
+        run: swift test 2>&1 | tee xctest.log || true
+        # TODO: once UAT is fully migrated to XCTest, flip this to `swift test` and drop UATRunner.
