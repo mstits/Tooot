@@ -7,6 +7,7 @@
 import SwiftUI
 import Foundation
 import ToooT_Core
+import ToooT_Plugins
 import Accelerate
 
 // MARK: - ToooTShell Engine
@@ -16,10 +17,15 @@ public final class JITInterpreter: ObservableObject {
     @Published var consoleOutput: String = "ToooTShell v3.0 [Apple Silicon Optimized]\nType 'help' for technical reference.\n"
     @Published var variables: [String: Double] = [:]
     @Published var macros: [String: String] = [:]
-    
-    private unowned var state: PlaybackState
-    private unowned var timeline: Timeline?
-    
+
+    internal unowned var state: PlaybackState
+    internal unowned var timeline: Timeline?
+    /// Set externally after init — JIT needs host for freeze/autosave/export/panic/TTS.
+    public weak var host: AudioHost?
+    /// Scoped scale for `quantize` / `note-in-scale` commands.
+    public var activeScale: ScaleSet = .chromatic
+    public var scaleRoot: Int = 60
+
     public init(state: PlaybackState, timeline: Timeline?) {
         self.state = state
         self.timeline = timeline
@@ -87,6 +93,216 @@ public final class JITInterpreter: ObservableObject {
         case "status": printStatus()
         case "help", "?": printHelp()
         case "macro": handleMacro(trimmed)
+
+        // ── v4 expanded command set — everything ToooT ships should be here ─────
+
+        case "panic":
+            host?.midiPanic(state: state)
+            appendOutput("MIDI panic — all notes off")
+
+        case "autosave":
+            if let h = host { h.autosave(state: state); appendOutput("Autosaved to ~/Library/Application Support/ToooT/autosave/") }
+
+        case "freeze":
+            guard let h = host, let ch = args.first.flatMap({ Int($0) }) else { appendOutput("freeze <ch>", isError: true); return }
+            if let inst = h.freezeChannel(ch - 1, state: state) {
+                appendOutput("Froze ch\(ch) → instrument \(inst)")
+            }
+
+        case "stems":
+            guard let h = host else { return }
+            let dir = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("ToooT Stems", isDirectory: true)
+            Task { @MainActor in
+                try? await h.exportStems(to: dir, state: state)
+                self.appendOutput("Stems exported to \(dir.path)")
+            }
+
+        case "export":
+            // `export master|mastered [spotify|apple|youtube|ebu] [path]`
+            guard let h = host else { return }
+            let target: MasteringExport.LoudnessTarget? = {
+                guard args.count >= 2 else { return nil }
+                switch args[1].lowercased() {
+                case "spotify":  return .spotify
+                case "apple":    return .appleMusic
+                case "youtube":  return .youtube
+                case "ebu":      return .ebuR128
+                case "amazon":   return .amazonMusic
+                default: return nil
+                }
+            }()
+            let url = FileManager.default.urls(for: .musicDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("\(state.songTitle).wav")
+            let opts = target.map {
+                AudioHost.ExportOptions(loudnessTarget: $0, ditherMode: .tpdf, ditherBits: 16)
+            } ?? .raw
+            Task { @MainActor in
+                let report = try? await h.exportAudio(to: url, state: state, options: opts)
+                if let r = report {
+                    self.appendOutput(String(format: "Exported %@ — target %.1f LUFS, gain ×%.3f",
+                                             url.lastPathComponent, r.measuredLUFS, r.gainApplied))
+                } else {
+                    self.appendOutput("Exported \(url.lastPathComponent) (raw)")
+                }
+            }
+
+        case "stretch":
+            // `stretch <inst> <factor>` — SOLA time-stretch on the instrument's first region.
+            guard let h = host, args.count >= 2, let id = Int(args[0]), let f = Float(args[1]) else { return }
+            if let bank = h.trackerAU?.sampleBank,
+               let region = state.instruments[id]?.regions.0,
+               region.length > 0 {
+                let newLen = OfflineDSP.timeStretch(bank: bank, offset: region.offset,
+                                                   length: region.length, factor: f)
+                appendOutput("Stretched inst \(id) × \(f) → \(newLen) frames")
+            }
+
+        case "pitch", "pitchshift":
+            guard let h = host, args.count >= 2, let id = Int(args[0]), let semi = Float(args[1]) else { return }
+            if let bank = h.trackerAU?.sampleBank,
+               let region = state.instruments[id]?.regions.0,
+               region.length > 0 {
+                _ = OfflineDSP.pitchShift(bank: bank, offset: region.offset,
+                                          length: region.length, semitones: semi)
+                appendOutput("Pitch-shifted inst \(id) by \(semi) semi")
+            }
+
+        case "send":
+            // `send <ch> <bus> <amount>` (0..1).
+            guard args.count >= 3, let ch = Int(args[0]), let bus = Int(args[1]),
+                  let amt = Float(args[2]) else { return }
+            state.setSend(channel: ch - 1, bus: bus - 1, amount: amt)
+            appendOutput("ch \(ch) → bus \(bus) = \(amt)")
+
+        case "busvol":
+            guard args.count >= 2, let bus = Int(args[0]), let v = Float(args[1]) else { return }
+            state.setBusVolume(v, bus: bus - 1)
+
+        case "scale":
+            // `scale major|minor|dorian|pentatonicMinor|...` [root-midi]
+            guard let first = args.first, let s = ScaleSet(rawValue: first) else {
+                appendOutput("Available: " + ScaleSet.allCases.map(\.rawValue).joined(separator: ", ")); return
+            }
+            self.activeScale = s
+            if args.count >= 2, let root = Int(args[1]) { self.scaleRoot = root }
+            appendOutput("Scale: \(s.rawValue), root MIDI \(scaleRoot)")
+
+        case "quantize":
+            // `quantize <ch>` — snaps every note on channel to the active scale.
+            guard let ch = args.first.flatMap({ Int($0) }) else { return }
+            state.snapshotForUndo(label: "Quantize ch\(ch)")
+            for r in 0..<64 {
+                let idx = (state.currentPattern * 64 + r) * kMaxChannels + (ch - 1)
+                let ev = state.sequencerData.events[idx]
+                guard ev.type == .noteOn, ev.value1 > 0 else { continue }
+                state.sequencerData.events[idx].value1 =
+                    MusicTheory.quantize(frequency: ev.value1,
+                                         rootMIDI: scaleRoot, scale: activeScale)
+            }
+            refresh()
+
+        case "chord":
+            // `chord <row> <ch> <root-midi> <major|minor|maj7|...>`
+            guard args.count >= 4, let row = Int(args[0]), let ch = Int(args[1]),
+                  let root = Int(args[2]),
+                  let q = MusicTheory.ChordQuality(rawValue: args[3]) else { return }
+            state.snapshotForUndo(label: "Chord")
+            let notes = MusicTheory.chord(rootMIDI: root, quality: q)
+            for (i, midi) in notes.enumerated() {
+                let targetCh = ch - 1 + i
+                guard targetCh < kMaxChannels else { break }
+                let idx = (state.currentPattern * 64 + row) * kMaxChannels + targetCh
+                state.sequencerData.events[idx] = TrackerEvent(
+                    type: .noteOn, channel: UInt8(targetCh),
+                    instrument: UInt8(state.selectedInstrument),
+                    value1: midiToHz(Float(midi)))
+            }
+            refresh()
+
+        case "scene":
+            // `scene save <idx> [name]` / `scene recall <idx>` / `scene list`
+            guard let sub = args.first?.lowercased() else { return }
+            switch sub {
+            case "save":
+                guard args.count >= 2, let idx = Int(args[1]) else { return }
+                let name = args.count >= 3 ? args[2] : "Scene \(idx)"
+                let snap = state.captureCurrentScene(name: name)
+                state.sceneBank.store(snap, at: idx)
+                appendOutput("Saved scene \(idx) as \"\(name)\"")
+            case "recall":
+                guard args.count >= 2, let idx = Int(args[1]),
+                      let snap = state.sceneBank.scene(at: idx) else { return }
+                state.recallScene(snap)
+                appendOutput("Recalled scene \(idx) (\(snap.name))")
+            case "list":
+                let keys = state.sceneBank.scenes.keys.sorted()
+                appendOutput(keys.map { "\($0): \(state.sceneBank.scenes[$0]?.name ?? "")" }
+                                  .joined(separator: "\n"))
+            default: appendOutput("scene save|recall|list", isError: true)
+            }
+
+        case "say", "talk":
+            // `say "text"` — speaks via AVSpeechSynthesizer.
+            let text = args.joined(separator: " ")
+                           .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            guard !text.isEmpty else { return }
+            ToooTTalk.shared.speak(text)
+            appendOutput("🗣 \"\(text)\"")
+
+        case "sayrender":
+            // `sayrender "text" <inst>` — renders speech with `say` to a WAV,
+            // loads into the instrument slot.
+            guard args.count >= 2, let instID = Int(args.last ?? "0") else { return }
+            let text = args.dropLast().joined(separator: " ")
+                           .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("tooot-talk-\(UUID().uuidString).wav")
+            if ToooTTalk.renderToFile(text: text, at: url) != nil {
+                Task { @MainActor in
+                    try? await self.host?.trackerAU?.sampleBank.load(from: url, offset: 0)
+                    self.appendOutput("Rendered speech → inst \(instID)")
+                }
+            }
+
+        case "script":
+            // `script <filename.js>` — runs a JS file from ~/Library/.../scripts.
+            guard let name = args.first else { return }
+            guard let dir = ScriptHost.shared.scriptsDirectory() else { return }
+            let url = dir.appendingPathComponent(name.hasSuffix(".js") ? name : "\(name).js")
+            guard let src = try? String(contentsOf: url, encoding: .utf8) else {
+                appendOutput("Script not found: \(url.lastPathComponent)", isError: true); return
+            }
+            let result = ScriptHost.shared.run(source: src, state: state)
+            appendOutput(result.log)
+            appendOutput("→ \(result.result)")
+
+        case "lufs":
+            if let s = host?.trackerAU?.sharedStatePtr.pointee {
+                appendOutput(String(format: "LUFS-M: %.1f  LUFS-S: %.1f  LUFS-I: %.1f  TP: %.3f  Corr: %+0.2f",
+                                    s.lufsMomentary, s.lufsShortTerm, s.lufsIntegrated,
+                                    s.truePeak, s.phaseCorrelation))
+            }
+
+        case "peak":
+            appendOutput(String(format: "Peak: %.3f  Active: %d", state.peakLevel, state.activeVoices))
+
+        case "template":
+            // `template blank|drum-starter|ambient-pad|techno-basic`
+            guard let slug = args.first,
+                  let manifest = TemplateManager.builtIns.first(where: { $0.slug == slug }) else {
+                appendOutput("Templates: " +
+                    TemplateManager.builtIns.map(\.slug).joined(separator: ", ")); return
+            }
+            guard let autosaveDir = AudioHost.autosaveDirectory() else { return }
+            let dir = autosaveDir.deletingLastPathComponent()
+                                 .appendingPathComponent("templates")
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            let url = dir.appendingPathComponent("\(slug).mad")
+            TemplateManager.write(manifest, to: url)
+            NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url)
+            appendOutput("Loaded template: \(manifest.title)")
+
         default: if let macro = macros[cmd] { run(macro) } else { appendOutput("Unknown command: \(cmd)", isError: true) }
         }
     }
@@ -227,9 +443,40 @@ public final class JITInterpreter: ObservableObject {
         [ MIXER & ENGINE ]
         ch <n> vol|pan <val>      : Adjust channel mix
         ch <n> mute|solo|unmute   : Channel toggles
+        send <ch> <bus> <amt>     : Set aux-bus send amount
+        busvol <bus> <val>        : Set bus master level
         inst <id> name <str>      : Rename instrument
         bpm <n> / volume <n>      : Master transport config
         play / stop / undo / redo : Transport controls
+        panic                     : MIDI panic — all notes off
+
+        [ PROJECT & I/O ]
+        autosave                  : Write autosave snapshot now
+        freeze <ch>               : Render channel to sample + replace events
+        stems                     : Export one WAV per active channel
+        export [spotify|apple|youtube|ebu]  : WAV export (optionally mastered)
+        stretch <inst> <factor>   : SOLA time-stretch on instrument's first region
+        pitch <inst> <semis>      : Pitch-shift (duration preserved)
+        template <slug>           : Load a starter template (e.g. drum-starter)
+
+        [ MUSIC THEORY ]
+        scale <name> [root-midi]  : Set active scale (major/minor/dorian/blues/...)
+        quantize <ch>              : Snap every note on ch to active scale
+        chord <row> <ch> <root-midi> <quality>: Layout a chord across channels
+
+        [ METERING ]
+        lufs                      : Print K-weighted LUFS + TP + correlation
+        peak                      : Print sample peak + active voice count
+
+        [ SCENES ]
+        scene save <idx> [name]   : Capture current mixer state
+        scene recall <idx>        : Apply saved scene
+        scene list                : List stored scenes
+
+        [ SCRIPTING & TTS ]
+        script <file.js>          : Run a JS file from ~/Library/.../scripts
+        say "text"                : Speak text via AVSpeechSynthesizer
+        sayrender "text" <inst>   : Render speech via `say` into instrument slot
         ─────────────────────────────────────────────────────────────────
         """
         appendOutput(helpText) 
@@ -241,7 +488,12 @@ public struct JITConsoleView: View {
     @Bindable var state: PlaybackState; @StateObject private var interpreter: JITInterpreter
     @State private var scriptInput: String = "// ToooTShell v3\nloop 4 {\n  $n = 36 + 12\n  euclid 1 3 8 $n\n  print \"Loop Iterated\"\n}\nstatus"
     @State private var singleLine: String = ""; @FocusState private var isTextFieldFocused: Bool
-    public init(state: PlaybackState, timeline: Timeline?) { self.state = state; self._interpreter = StateObject(wrappedValue: JITInterpreter(state: state, timeline: timeline)) }
+    public init(state: PlaybackState, timeline: Timeline?, host: AudioHost? = nil) {
+        self.state = state
+        let interp = JITInterpreter(state: state, timeline: timeline)
+        interp.host = host
+        self._interpreter = StateObject(wrappedValue: interp)
+    }
     public var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 8) { headerView; outputLogView; replView; Divider().background(Color.green.opacity(0.2)); scriptEditorView }.padding(10)

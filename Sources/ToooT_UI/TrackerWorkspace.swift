@@ -123,7 +123,7 @@ public struct TrackerWorkspace: View {
             .padding(4).background(Color.black.opacity(0.3)).cornerRadius(8)
             
             Spacer()
-            Button(action: { JITWindowManager.show(state: state, timeline: timeline) }) {
+            Button(action: { JITWindowManager.show(state: state, timeline: timeline, host: host) }) {
                 HStack(spacing: 6) { Image(systemName: "terminal.fill").font(.system(size: 10)); Text("JIT SHELL").font(.system(size: 9, weight: .black, design: .monospaced)) }
                 .padding(.horizontal, 12).padding(.vertical, 6).background(Color.green.opacity(0.2)).foregroundColor(.green).cornerRadius(6)
             }.buttonStyle(.plain)
@@ -574,17 +574,10 @@ public struct NeuralIntelligenceView: View {
     private func neuralHarmony() { state.snapshotForUndo(); let pat = state.currentPattern; for r in 0..<64 { let off = (pat * 64 + r) * kMaxChannels; let ev = state.sequencerData.events[off]; if ev.type == .noteOn { state.sequencerData.events[off + 2] = TrackerEvent(type: .noteOn, channel: 2, instrument: ev.instrument, value1: ev.value1 * 1.4983) } }; timeline?.publishSnapshot(); state.textureInvalidationTrigger += 1; state.showStatus("Harmony Generated") }
 }
 
-public struct VideoSyncView: View {
-    @Bindable var state: PlaybackState; @State private var player: AVPlayer?
-    public init(state: PlaybackState) { self.state = state }
-    public var body: some View {
-        VStack(spacing: 15) {
-            HStack { Text("VIDEO TIMECODE SYNC").font(.system(size: 11, weight: .black, design: .monospaced)).foregroundStyle(StudioTheme.gradient); Spacer() }.padding(.horizontal)
-            if let p = player { VideoPlayerView(player: p).frame(height: 200).cornerRadius(10).padding(.horizontal).onChange(of: state.currentEngineRow) { _, newRow in let subRow = Double(newRow) + Double(state.fractionalRow); let time = subRow * (60.0 / Double(max(32, state.bpm)) * Double(state.ticksPerRow) / 6.0); p.seek(to: CMTime(seconds: time, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero) }.onChange(of: state.isPlaying) { _, isPlaying in if isPlaying { p.play() } else { p.pause() } }
-                HStack { Button("Unload") { player = nil }.buttonStyle(.bordered); Spacer(); Text("Time: \(p.currentTime().seconds, specifier: "%.2f")s").font(.system(size: 10, design: .monospaced)) }.padding(.horizontal)
-            } else { VStack(spacing: 10) { Image(systemName: "video.badge.plus").font(.system(size: 30)).foregroundColor(.gray); Button("Load Reference Video...") { let panel = NSOpenPanel(); panel.allowedContentTypes = [.movie, .quickTimeMovie, .mpeg4Movie]; if panel.runModal() == .OK, let url = panel.url { player = AVPlayer(url: url) } }.buttonStyle(.borderedProminent) }.frame(height: 200).frame(maxWidth: .infinity).background(Color.black.opacity(0.4)).cornerRadius(12).padding(.horizontal) }
-        }
-    }
+// VideoSyncView moved to Sources/ToooT_UI/VideoSync.swift (proper AVPlayer model +
+// drift-based resync + drag-and-drop). This file keeps the tracker workspace tidy.
+struct LegacyVideoSyncViewUnused: View {
+    var body: some View { EmptyView() }
 }
 
 struct RecordingControlsView: View {
@@ -634,13 +627,13 @@ class WaveformWindowManager {
 class JITWindowManager {
     static var sharedPanel: NSPanel?
 
-    static func show(state: PlaybackState, timeline: Timeline?) {
+    static func show(state: PlaybackState, timeline: Timeline?, host: AudioHost? = nil) {
         if let panel = sharedPanel {
             panel.makeKeyAndOrderFront(nil)
             return
         }
 
-        let consoleView = JITConsoleView(state: state, timeline: timeline)
+        let consoleView = JITConsoleView(state: state, timeline: timeline, host: host)
             .frame(minWidth: 500, minHeight: 300)
             .background(StudioTheme.surface.opacity(0.98))
 

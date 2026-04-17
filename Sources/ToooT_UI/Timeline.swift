@@ -33,8 +33,15 @@ public final class Timeline {
     private let timerContainer = TimerContainer()
     private var lastBPM: Int = 0
 
+    /// Set by ProjectToooTApp on launch; fired every 60 s of real time to write
+    /// an autosave snapshot. Decoupled from the 30 Hz UI sync loop so the
+    /// MADWriter IO cost never lands on a rendering frame.
+    public var onAutosaveTick: (() -> Void)?
+
     /// Called when BPM changes mid-playback so the host can update the MIDI clock rate.
     public var onBPMChange: ((Int) -> Void)?
+
+    private var lastAutosaveTime: TimeInterval = Date().timeIntervalSinceReferenceDate
 
     public init(state: PlaybackState, engine: AudioEngine, renderNode: AudioRenderNode? = nil) {
         self.state      = state
@@ -48,6 +55,13 @@ public final class Timeline {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.syncEngineToUI()
+
+                // Autosave cadence: 60 s of wall-clock time.
+                let now = Date().timeIntervalSinceReferenceDate
+                if now - self.lastAutosaveTime >= 60.0 {
+                    self.lastAutosaveTime = now
+                    self.onAutosaveTick?()
+                }
             }
     }
 

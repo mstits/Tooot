@@ -39,7 +39,7 @@ public struct TrackerAppView: View {
             HUDOverlay(state: playbackState)
             
             if showCommandPalette {
-                CommandPaletteView(isPresented: $showCommandPalette, state: playbackState)
+                LegacyCommandPaletteShim(isPresented: $showCommandPalette, state: playbackState)
             }
         }
         .preferredColorScheme(.dark)
@@ -91,6 +91,13 @@ public struct TrackerAppView: View {
             if let engine = h.trackerAU {
                 let tl = Timeline(state: playbackState, engine: engine, renderNode: h.renderNode)
                 tl.onBPMChange = { [weak h] bpm in h?.updateClockBPM(bpm) }
+                tl.onAutosaveTick = { [weak h, weak playbackState] in
+                    guard let h, let playbackState else { return }
+                    h.autosave(state: playbackState)
+                }
+                // Wire PlaybackState → engine bus/send arrays so mixer UI can set sends
+                // without reaching through AudioEngine.renderNode.resources.
+                playbackState.engineRenderResources = engine.renderNode.resources
                 self.timeline = tl
                 if let url = documentURL { loadSong(from: url) }
             }
@@ -289,15 +296,17 @@ struct WelcomeButton: View {
     }
 }
 
-struct CommandPaletteView: View {
-    @Binding var isPresented: Bool; let state: PlaybackState; @State private var searchText = ""
+// CommandPaletteView lives in CommandPalette.swift. This shim preserves the
+// (isPresented:state:) call signature from earlier callers.
+struct LegacyCommandPaletteShim: View {
+    @Binding var isPresented: Bool
+    let state: PlaybackState
     var body: some View {
         ZStack {
-            Color.black.opacity(0.8).ignoresSafeArea().onTapGesture { isPresented = false }
-            VStack(spacing: 0) {
-                TextField("Type a command...", text: $searchText).font(.system(size: 16, design: .monospaced)).padding().background(Color.white.opacity(0.1)).foregroundColor(.white).onSubmit { isPresented = false }
-                List { Button("Import Samples...") { isPresented = false }; Button("Add Track") { isPresented = false } }.listStyle(.plain).frame(height: 200)
-            }.frame(width: 400).background(StudioTheme.surface).cornerRadius(12).overlay(RoundedRectangle(cornerRadius: 12).stroke(StudioTheme.accent, lineWidth: 1)).shadow(radius: 20)
+            Color.black.opacity(0.55).ignoresSafeArea()
+                .onTapGesture { isPresented = false }
+            CommandPaletteView()
+                .onKeyPress(.escape) { isPresented = false; return .handled }
         }.zIndex(100)
     }
 }
