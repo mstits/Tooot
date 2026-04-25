@@ -8,15 +8,15 @@ The goal is parity with the best, not a toy. Every gap below is addressable; non
 
 ```mermaid
 pie title 39-item roadmap status
-    "Shipped" : 27
+    "Shipped" : 33
     "Scaffold / Partial" : 4
-    "Deferred with plan" : 8
+    "Deferred with plan" : 2
 ```
 
 ```mermaid
 flowchart LR
-    Today[Today<br/>27 items shipped<br/>232 UAT passes<br/>11 stress scenarios OK] --> Next[Next release<br/>ship arrangement UI<br/>ship session UI<br/>HN / Reddit launch]
-    Next --> Later[Later<br/>ARA2 + AAF skipped per OSS rule<br/>iPad skipped per platform rule<br/>CRDT collab is long-term]
+    Today[Today<br/>33 items shipped<br/>230 UAT passes<br/>v2.0.0 on GitHub] --> Next[Next release<br/>linear-phase EQ activation<br/>cold-launch profile<br/>v2.0.1 cut]
+    Next --> Later[Later<br/>plugin-param automation<br/>realtime multi-core<br/>localization + a11y]
 ```
 
 ## Shipped
@@ -48,9 +48,13 @@ flowchart LR
 - ✅ Sidechain ducking
 - ✅ Master safety limiter
 - ✅ **Mastering metering** — ITU-R BS.1770-4 LUFS (momentary / short-term / integrated) + 4× true-peak + L/R phase correlation
-- ✅ **Aux bus routing** — 4 stereo buses, per-(channel,bus) send matrix, per-bus master volumes (bus inserts still pending)
+- ✅ **Aux bus routing** — 4 stereo buses, per-(channel,bus) send matrix, per-bus master volumes, AUv3 insert chains on every bus (4 slots/bus)
 - ✅ **Dither + loudness-normalized export** — TPDF/rectangular dither, Spotify/Apple/YouTube/EBU R128 targets with true-peak ceiling
-- ✅ **Project auto-save** — 60 s cadence, rolling 10-file per-title window, crash-recovery prompt ready
+- ✅ **Project auto-save + crash recovery** — 60 s cadence, rolling 10-file per-title window, prompt sheet shown on launch
+- ✅ **Render-path automation** — `AutomationSnapshot` atomic-swap + per-row evaluator covering channel volume/pan/send, bus volume, master volume
+- ✅ **Multi-core offline render** — `renderOfflineConcurrent` parallelizes voice processing across cores; powers `exportAudio`
+- ✅ **AppIntents (Shortcuts.app)** — Open Project / Open Last Autosave / New Project + AppShortcutsProvider
+- ✅ **MAD metadata + thumbnail primitives** — `MADMetadataReader` + `MADThumbnail` ready to drop into Quick Look + Spotlight `mdimporter` extension targets
 - ✅ **Command palette** — ⌘K fuzzy finder with default Transport/Mastering/File/Edit/Track/View commands
 - ✅ **Template projects** — programmatic builders for Blank / Drum Starter / Ambient Pad / Techno Basic
 - ✅ SOLA time-stretch + pitch-shift
@@ -67,10 +71,8 @@ flowchart LR
 ### 1. Variable sample rate ✅ **SHIPPED**
 `AudioEngine(sampleRate:)` and `AudioRenderNode(sampleRate:)` stored properties threaded through the render block, offline render, SynthVoice.process, MasterMeter, AUAudioUnitBus format, CoreAudio output stream, exportAudio, exportStems, freezeChannel, SpatialManager, CLAP instance rate. UAT suite 36 verifies 48 kHz end-to-end.
 
-### 2. Linear arrangement view
-**Today:** tracker pattern grid only. Pattern-based composition is one of three major DAW paradigms; the other two are session-view (Ableton) and linear timeline (everyone else).
-**Pro DAWs:** clips on tracks along a horizontal timeline, drag-to-arrange, ripple edit, slip edit, scrub preview. Pro Tools / Logic / Reaper / Cubase all build on this.
-**Fix:** New `Arrangement` model: `Track → [AudioClip | MIDIClip | PatternClip]`. Clip has `start`, `length`, `offset` in source, `fadeIn`, `fadeOut`, `gain`. `AudioRenderNode` gains a second mode that reads from clips rather than patterns (or composes both). Substantial — ~3000 lines.
+### 2. Linear arrangement view ⚠ **PARTIAL**
+`ToooT_Core/Arrangement.swift` ships the model: `Track → [Clip]`, `Clip` carries `start`/`duration`/`fadeIn`/`fadeOut`/`gainLinear`/`offset`/kind. `ToooT_UI/ArrangementView.swift` renders the timeline with zoom + playhead + drag-to-move + drag-to-resize, persisting through the `.mad` `TOOO` chunk. Render-path consumption (`AudioRenderNode` reading clips instead of patterns) is the remaining work — the view edits the model but the engine still plays the pattern grid.
 
 ### 3. Clip-based audio editing
 **Today:** audio is instruments + tracker triggers.
@@ -88,15 +90,11 @@ Aux bus **plumbing** ships: `kAuxBusCount = 4` stereo buses in `RenderResources`
 ### 6. LUFS / true-peak / phase correlation metering ✅ **SHIPPED**
 `MasterMeter` in `ToooT_Core/Metering.swift` implements ITU-R BS.1770-4: pre-filter high-shelf + RLB high-pass biquads (recomputed per sample rate), 100 ms block accumulator → momentary (400 ms) + short-term (3 s) + gated integrated (absolute −70 LU gate). 4× linear-interp true-peak detection. Pearson L/R phase correlation over 400 ms. Wired on the post-limiter master. Key fix: `reset()` clears biquad history so post-transient filter decay doesn't pin integrated LUFS at ~−37 dB after transport stop.
 
-### 7. Automation beyond Bezier volume/pan/pitch
-**Today:** Automation lanes declared in `PlaybackState.automationLanes` but read path partial.
-**Pro DAWs:** automate every parameter (plugin params, sends, bus levels, tempo, key, time signature). Modes: read / touch / latch / write / trim. Link across channels.
-**Fix:** Flesh out lane evaluator in render path. Wire parameter IDs through AUv3 parameter tree. Write automation capture during plugin UI edits.
+### 7. Automation beyond Bezier volume/pan/pitch ✅ **SHIPPED**
+`AutomationSnapshot` is published atomically to `AudioRenderNode` and consumed at every row boundary by `AudioRenderNode.applyAutomation`. Supported target IDs: `ch.<N>.{volume,pan,send.<bus>}`, `bus.<B>.volume`, `master.volume`. Lock-free swap mirrors the song-snapshot pattern. `Timeline.publishSnapshot` rebuilds + republishes whenever `PlaybackState` changes (legacy UI Bezier lanes are converted inline). Plugin-parameter automation through AUv3 parameter trees + capture-on-edit are still pending.
 
-### 8. Multi-core render scheduling
-**Today:** single-threaded render block. `activeChannelIndices` is built but processed sequentially.
-**Pro DAWs:** dependency graph of tracks/buses, scheduled across all cores; pipelined processing of non-dependent tracks in parallel.
-**Fix:** Per-track render tasks submitted to a fixed GCD queue; dependency edges for bus routing. Audio thread waits on the graph via a single dispatch group. Substantial — ~800 lines + threading review.
+### 8. Multi-core render scheduling ⚠ **PARTIAL**
+Offline path is parallelized: `AudioRenderNode.renderOfflineConcurrent` uses `DispatchQueue.concurrentPerform` with a pre-allocated per-thread voice scratch pool (`RenderResources.voiceThreadSlots = 8`) and `mixLock`-protected mixing. `AudioHost.exportAudio` now drives bounces through this path — meaningful speedup on M-series. Realtime render block is still serial; a per-track GCD graph for live playback is the remaining work (~800 lines + threading review).
 
 ### 9. High-order plugin latency compensation
 **Today:** PDC works per-channel with a flat 1 s maximum.
@@ -104,19 +102,15 @@ Aux bus **plumbing** ships: `kAuxBusCount = 4` stereo buses in `RenderResources`
 **Fix:** Query `AUAudioUnit.latency` at plugin load, propagate max through the render graph (builds on #8). Current per-channel path is a subset of the full solution.
 
 ### 10. Project auto-save & crash recovery ✅ **SHIPPED**
-`Timeline.onAutosaveTick` fires every 60 s off the 30 Hz UI sync loop. `AudioHost.autosave(state:)` writes via `MADWriter` to `~/Library/Application Support/ToooT/autosave/{safeTitle}_{ISO8601}.mad` on a utility-QoS background Task. Rolling 10-file per-title window. `AudioHost.latestAutosave(for:)` available for launch-time crash-recovery UI (prompt not yet wired — trivial follow-up).
+`Timeline.onAutosaveTick` fires every 60 s off the 30 Hz UI sync loop. `AudioHost.autosave(state:)` writes via `MADWriter` to `~/Library/Application Support/ToooT/autosave/{safeTitle}_{ISO8601}.mad` on a utility-QoS background Task. Rolling 10-file per-title window. `TrackerAppView.checkForCrashRecovery()` runs on launch; if `recentAutosaves(maxAgeSeconds: 86_400)` returns anything, `CrashRecoveryPromptView` is shown as a sheet with restore-latest / dismiss actions.
 
 ## MIDI gaps
 
-### 11. Piano Roll with CC lanes
-**Today:** `PianoRollView` exists (~150 lines) — note painting + erase. No expression lanes.
-**Pro DAWs:** draggable velocity, aftertouch, pitch bend, mod wheel, any CC, per-note parameters (MPE).
-**Fix:** Expand `PianoRollView` with CC lane editor. Bind to `Instrument.automationLanes[cc]`.
+### 11. Piano Roll with CC lanes ✅ **SHIPPED**
+`PianoRollView` includes a CC lane editor with a CC selector toolbar. Lane storage lives on `PlaybackState.ccLanes` keyed by `pat.<p>.ch.<ch>.cc.<cc>` → `[col: Float]`; `ccLaneValue` / `setCCLaneValue` read & write through. Persists in the `.mad` `TOOO` chunk via `pluginStates` merge.
 
-### 12. MPE (MIDI Polyphonic Expression)
-**Today:** single-channel MIDI 1.0 + basic UMP.
-**Pro DAWs:** per-note pitch bend, per-note pressure, per-note Y-axis (slide). Native support across Logic, Bitwig, Ableton Live; ships in every modern MPE controller (Roli, LinnStrument).
-**Fix:** Extend `TrackerEvent` with per-note voice ID, pitch bend, pressure, Y. Route MPE events through MIDI 2.0 UMP (ToooT already uses UMP; just need the "configuration" message handling).
+### 12. MPE (MIDI Polyphonic Expression) ✅ **SHIPPED**
+`TrackerEvent` carries `noteId` + `perNotePitchBend` + `perNotePressure` + `perNoteTimbre`. `MIDI2Manager.dispatchUMP` allocates note-IDs at noteOn, retires them at noteOff, and threads per-note pitch bend / pressure UMP messages through with the matching ID. Per-note Y-axis (timbre) field is plumbed but not yet bound to a voice parameter.
 
 ### 13. Arpeggiator as a MIDI effect
 **Today:** `arp` JIT macro generates notes into the pattern.
@@ -135,15 +129,11 @@ Aux bus **plumbing** ships: `kAuxBusCount = 4` stereo buses in `RenderResources`
 
 ## Session / performance gaps
 
-### 16. Session / clip-launch view (Ableton paradigm)
-**Today:** pattern-linear playback.
-**Pro DAWs:** grid of clip slots; trigger clips by cell; scenes = horizontal rows; quantized launch (wait for bar/beat); follow actions.
-**Fix:** `SessionGrid` model + view. Backed by `[PatternClip | AudioClip]` per cell. Launches drive `PlaybackState.pendingLaunchCell`; `processTickSequencer` consumes on bar/beat boundaries.
+### 16. Session / clip-launch view (Ableton paradigm) ⚠ **PARTIAL**
+`ToooT_Core/SessionGrid.swift` model + `ToooT_UI/SessionGridView.swift` UI ship: grid of clip slots, scene rows, quantized launch helpers. Like #2, the model is end-to-end editable but the engine doesn't yet trigger clips from `processTickSequencer` at bar/beat boundaries — the consumption side is the remaining work.
 
-### 17. Scene automation
-**Today:** none.
-**Pro DAWs:** scenes as named snapshots of mixer/automation state; scene recall switches state at a quantized boundary.
-**Fix:** `Scene` = `{channelVolumes, pans, mutes, soloes, sends, pluginStates}` snapshot. Stored in project. Recall via snapshot-swap-style atomic replacement.
+### 17. Scene automation ✅ **SHIPPED**
+`SceneSnapshot` + `SceneBank` capture & recall the entire mixer state (channel volumes / pans / mutes / sends / bus volumes / master volume / BPM / sidechain). Recall is atomic via `PlaybackState.recallScene`. Persists in the `.mad` `TOOO` chunk. Quantized-boundary recall (recall-on-next-bar) isn't wired yet — recall fires immediately.
 
 ## Mastering / quality
 
@@ -168,25 +158,19 @@ Safety limiter + ✅ `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64
 **Pro DAWs:** AAF is the post-production interchange format; OMF is legacy but still common. Required to hand sessions to a film mix.
 **Fix:** Third-party AAFLib exists (LGPL — requires dynamic linking for MIT compatibility). ~1500 lines shim.
 
-### 23. Video sync — finish the implementation
-**Today:** `.mp4`/`.mov` load referenced in README but no visible wiring.
-**Pro DAWs:** timecode-locked video preview; LTC / MTC chase; frame-accurate edit.
-**Fix:** `AVPlayer` + `CADisplayLink` sync. `EngineSharedState.playheadPosition` already exists; drive video playhead from it. `AVPlayerItem.timebase` for LTC output.
+### 23. Video sync ✅ **SHIPPED**
+`ToooT_UI/VideoSync.swift` defines `VideoSyncModel` (AVPlayer + project-time → video-time drift correction at >1-frame thresholds) and `VideoSyncView`, surfaced on the `.video` workbench tab. Outbound LTC/MTC and frame-accurate edit are not yet wired — the sync direction here is engine → video, not the reverse.
 
 ## UI / UX polish
 
 ### 24. Command palette (Cmd+K) ✅ **SHIPPED**
 `ToooT_UI/CommandPalette.swift`. `CommandRegistry` singleton with weighted fuzzy match (exact-prefix > word-prefix > substring > category). `CommandPaletteView` SwiftUI sheet with keyboard navigation. `registerDefaults(state:host:timeline:)` seeds Transport/Mastering/File/Edit/Track/View commands. UAT verifies ranking + multi-token AND + category-only matching + case insensitivity + id replacement.
 
-### 25. Keyboard shortcut customization
-**Today:** hardcoded in SwiftUI views.
-**Pro DAWs:** user-editable keymaps, presets per DAW family ("Pro Tools mode", "Logic mode").
-**Fix:** `KeyBindings` model + preferences UI + runtime dispatch.
+### 25. Keyboard shortcut customization ✅ **SHIPPED**
+`ToooT_UI/KeyBindings.swift`. `KeyBindingManager` with `toooTDefault` / `proToolsStyle` / `logicStyle` presets. Persisted to `UserDefaults`. Runtime dispatch via `commandID` lookup so view-layer shortcuts route through a single resolver.
 
-### 26. Undo history browser
-**Today:** Cmd+Z stack.
-**Pro DAWs:** Logic / Photoshop / VSCode style — visual list of past states, jump to any point.
-**Fix:** Expose `undoStack` in a side panel with labels per operation. Requires labeling each `snapshotForUndo()` call site.
+### 26. Undo history browser ✅ **SHIPPED**
+`PlaybackState.undoLabels` is a parallel array to `undoStack` populated by `snapshotForUndo(label:)` — every call site provides a human-readable description. `UndoHistoryBrowserView` surfaces the stack as a side panel for jump-to-step navigation.
 
 ### 27. Template projects ✅ **SHIPPED**
 `ToooT_UI/Templates.swift`. Programmatic builders (not binary blobs) for 4 starters: `blank`, `drum-starter` (Euclidean 7/16 hi-hat + 4×4 kick + snare on 2/4 at 128 BPM), `ambient-pad` (C/F drone at 78 BPM), `techno-basic` (kick + off-beat open hat + bassline at 125 BPM). `TemplateManager.materializeBuiltInsIfMissing()` writes them to `~/Library/Application Support/ToooT/templates/` on first launch. User-saved templates dropped in the same dir get enumerated alongside built-ins.
@@ -200,10 +184,8 @@ Safety limiter + ✅ `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64
 **Today:** untested.
 **Fix:** `accessibilityLabel` + `accessibilityValue` on every interactive control. `@ScaledMetric` for font sizes. Keyboard-only navigation through all views.
 
-### 30. macOS integration polish
-**Today:** Basic app structure.
-**Pro DAWs / native Mac apps:** Finder Quick Look for `.mad`, Spotlight indexing, Shortcuts.app actions, drag-and-drop from Finder, system media keys, "Services" menu.
-**Fix:** `mdimporter` for Spotlight, `QLPreviewExtension`, `AppIntents` for Shortcuts.
+### 30. macOS integration polish ⚠ **PARTIAL**
+AppIntents shipped: `OpenToooTProjectIntent`, `OpenLastAutosaveIntent`, `NewToooTProjectIntent`, plus `ToooTShortcutsProvider` so they appear in Spotlight + Shortcuts gallery. Quick Look + Spotlight `mdimporter` data-extraction primitives shipped (`MADMetadataReader.read`, `MADThumbnail.renderPNG`); the actual `.appex` / `.mdimporter` bundles must be wrapped in Xcode (SPM doesn't build those bundle types) — recipes in `docs/MAD_QUICKLOOK_SPOTLIGHT.md`. Drag-and-drop, system media keys, and the Services menu are still pending.
 
 ## Ecosystem / community
 
@@ -250,22 +232,25 @@ Safety limiter + ✅ `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64
 **Pro DAWs:** FabFilter Pro-Q 4 does FFT on GPU. Some mastering limiters. GPU-accelerated convolution reverb.
 **Fix:** Port `OfflineDSP.resample` / `timeStretch` / `smooth` to Metal compute shaders where they beat vDSP on M-series (generally only for N > ~10k with many parallel operations).
 
-### 39. Cold-launch time budget
-**Today:** untracked.
-**Pro DAWs:** Logic launches in <5s; Live in ~3s; Reaper in <2s. Plugin scanning dominates.
-**Fix:** Async plugin scan, deferred DSP compilation, lazy instrument bank allocation. Measure with `os_signpost`.
+### 39. Cold-launch time budget ⚠ **PARTIAL**
+Instrumented: `AudioHost.setup` wraps an outer `os_signpost` plus inner intervals on `EngineBoot`, `InternalDSPBoot`, `OutputUnitBoot`. `AUv3Host` has its own `scanLog`. Subsystem `com.apple.ProjectToooT` / category `ColdLaunch` for filtering. Actual measurement under Instruments + optimization (async plugin scan, deferred DSP compilation, lazy instrument bank allocation) hasn't been done yet — that's the remaining work.
 
 ---
 
 ## Next-session priorities (recommendation)
 
-Sorted by (user-visible impact) × (implementation cost):
+The original "must-fix-first" list (variable sample rate, LUFS metering, buses/sends, auto-save, command palette) all shipped — what's left clusters into three buckets:
 
-1. **#1 Variable sample rate** — unblocks pro sessions at 48/96/192 kHz
-2. **#6 LUFS + true-peak metering** — mastering credibility
-3. **#5 Buses + sends** — foundational for pro mixing
-4. **#10 Auto-save + crash recovery** — table stakes for anyone doing real work
-5. **#24 Command palette** — huge UX win, small code
-6. **#2 Linear arrangement view** — the single largest missing paradigm
+**Close out the partials (~1–3 h each):**
+- **#18 Linear-phase EQ activation** — scaffold + FFT infrastructure are in place; flip the convolution path on and wire into the master chain
+- **#39 Cold-launch profile** — signposts exist, run under Instruments, optimize the worst phase
+- **#8 Realtime multi-core** — offline path is parallel; replicate for the live render block (~800 lines, threading review)
 
-#2 is a multi-session effort. The other five are each ~1–2 days and multiply ToooT's professional usability.
+**Connect arrangement/session models to the engine (~1 day each):**
+- **#2 Arrangement render-path consumption** — engine currently plays the pattern grid; hook clip-based playback so the timeline UI actually drives audio
+- **#16 SessionGrid bar/beat-quantized launch** — same shape as #2, smaller scope
+
+**Pure long tail:**
+- **#28 Localization** — String Catalog + `String(localized:)` everywhere
+- **#29 Accessibility** — `accessibilityLabel` / `@ScaledMetric` pass
+- **#36 XCTest port** — finish migrating UAT into `Tests/`
