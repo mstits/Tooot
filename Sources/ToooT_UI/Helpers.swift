@@ -39,13 +39,16 @@ public enum PluginType: String, Identifiable, CaseIterable {
     public var id: String { rawValue }
 }
 
-public struct AutomationPoint: Identifiable, Sendable {
+/// UI-editor point with a Bezier control offset. Pairs with
+/// `BezierAutomationLane`. Distinct from `ToooT_Core.AutomationPoint`,
+/// which carries `beat: Double`, `value: Float`, and `curveOut`.
+public struct BezierAutomationPoint: Identifiable, Sendable {
     public let id = UUID()
     public var time:  Double
     public var value: Double
     /// Relative offset of the Bezier control point (0,0 is a straight line to the next point)
     public var controlPoint: CGPoint
-    
+
     public init(time: Double, value: Double, controlPoint: CGPoint = .zero) {
         self.time = time
         self.value = value
@@ -53,11 +56,16 @@ public struct AutomationPoint: Identifiable, Sendable {
     }
 }
 
-public struct AutomationLane: Identifiable, Sendable {
+/// UI-editor lane backed by Bezier control points. Distinct from
+/// `ToooT_Core.AutomationLane`, which is the render-path representation
+/// (string `targetID`, `Float` values, absolute beats, fixed curve enum).
+/// The two are connected via `Timeline.publishSnapshot`, which converts
+/// edits made through this type into the Core type the engine consumes.
+public struct BezierAutomationLane: Identifiable, Sendable {
     public let id = UUID()
     public var parameter: String
-    public var points: [AutomationPoint]
-    public init(parameter: String, points: [AutomationPoint] = []) { self.parameter = parameter; self.points = points }
+    public var points: [BezierAutomationPoint]
+    public init(parameter: String, points: [BezierAutomationPoint] = []) { self.parameter = parameter; self.points = points }
     public func evaluate(at position: Double) -> Double {
         let sorted = points.sorted { $0.time < $1.time }
         guard !sorted.isEmpty else { return 1.0 }

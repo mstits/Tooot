@@ -222,7 +222,7 @@ public final class PlaybackState: @unchecked Sendable {
     public func setMute(_ m: Bool, for ch: Int) { if ch >= 0 && ch < kMaxChannels { channelMutesPtr[ch] = m ? 1 : 0; mixerGeneration += 1 } }
     public func setSolo(_ s: Bool, for ch: Int) { if ch >= 0 && ch < kMaxChannels { channelSolosPtr[ch] = s ? 1 : 0; mixerGeneration += 1 } }
     public var anySolo: Bool { for i in 0..<kMaxChannels { if channelSolosPtr[i] != 0 { return true } }; return false }
-    public var automationLanes: [Int: [AutomationLane]] = [:]; public var channelPositions: [Int: SIMD3<Float>] = [:]
+    public var automationLanes: [Int: [BezierAutomationLane]] = [:]; public var channelPositions: [Int: SIMD3<Float>] = [:]
     public func snapshotForUndo(label: String = "Edit") {
         let count = kMaxChannels * 64 * 100; let copy = Array(UnsafeBufferPointer(start: sequencerData.events, count: count))
         if undoStack.count >= 50 { undoStack.removeFirst(); undoLabels.removeFirst() }

@@ -112,10 +112,10 @@ public final class Timeline {
             panEnv:      state.panEnvEnabledPtr,
             pitchEnv:    state.pitchEnvEnabledPtr))
 
-        // PlaybackState.automationLanes is the legacy UI Bezier representation in
-        // Helpers.swift; convert to the Core lane type that the render evaluator
-        // consumes. parameter → targetID, time → beat, value → Float, controlPoint
-        // origin → linear (anything else → sCurve).
+        // PlaybackState.automationLanes uses BezierAutomationLane (UI-editor type).
+        // Convert to the Core lane type that the render evaluator consumes:
+        // parameter → targetID, time → beat, value → Float, controlPoint origin →
+        // linear curve (anything else → sCurve).
         var perChannel: [Int: [ToooT_Core.AutomationLane]] = [:]
         for (ch, uiLanes) in state.automationLanes {
             perChannel[ch] = uiLanes.map { ui -> ToooT_Core.AutomationLane in
