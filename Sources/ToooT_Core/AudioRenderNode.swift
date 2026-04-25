@@ -109,11 +109,14 @@ public final class RenderResources: @unchecked Sendable {
     public let busVolumes:    UnsafeMutablePointer<Float>
     public let sendAmounts:   UnsafeMutablePointer<Float>
 
-    // Per-thread voice scratch buffers for the optional multi-core offline render
-    // path (renderOfflineConcurrent). We pre-allocate `voiceThreadSlots` × 4 buffers
-    // so concurrentPerform can run several voice.process() calls in parallel without
-    // contending on `scratchL` / `scratchR` / `scratchMono` / `interpScratch`.
-    public static let voiceThreadSlots: Int = 8
+    // Per-voice scratch buffers for the multi-core offline render path
+    // (renderOfflineConcurrent). One slot per voice — sized to kMaxChannels —
+    // so `concurrentPerform` can run every voice.process() call against its
+    // own buffers without collisions. The earlier "8 round-robin slots"
+    // design was incorrect: with N>8 active voices, two iterations could
+    // collide on the same slot since concurrentPerform doesn't pin
+    // iterations to threads.
+    public static let voiceThreadSlots: Int = kMaxChannels
     public let threadScratchL:      UnsafeMutablePointer<UnsafeMutablePointer<Float>>
     public let threadScratchR:      UnsafeMutablePointer<UnsafeMutablePointer<Float>>
     public let threadScratchMono:   UnsafeMutablePointer<UnsafeMutablePointer<Float>>
@@ -1071,16 +1074,17 @@ state.pointee.peakLevel = max(peakL, peakR)
                     let sampleRate = Float(self.sampleRate)
                     let activeCount = res.activeChannelCount
 
-                    // Parallel voice processing. Each task grabs a scratch slot from the
-                    // pre-allocated pool (round-robin across the `voiceThreadSlots` slots,
-                    // bucketed by voice index so the same voice always hits the same slot
-                    // within this block — trivially cache-friendly).
+                    // Parallel voice processing. Each iteration owns a unique scratch
+                    // slot indexed by `idx`; voiceThreadSlots == kMaxChannels so collisions
+                    // are impossible. (An earlier "round-robin mod 8" allocation could
+                    // race two iterations onto the same slot — a real bug, caught by the
+                    // serial-vs-concurrent parity test in UAT 53.)
                     DispatchQueue.concurrentPerform(iterations: activeCount) { idx in
                         let i = res.activeChannelIndices[idx]
                         let vp = res.voices.advanced(by: i)
                         guard vp.pointee.active else { return }
 
-                        let slot = idx % RenderResources.voiceThreadSlots
+                        let slot = idx
                         let sL = res.threadScratchL[slot]
                         let sR = res.threadScratchR[slot]
                         let sM = res.threadScratchMono[slot]

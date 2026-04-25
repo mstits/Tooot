@@ -1183,22 +1183,82 @@ autoreleasepool {
 // ─────────────────────────────────────────────────────────────────────────────
 print("\n── 53. Concurrent Offline Render ───────────────────────────────────")
 autoreleasepool {
-    // Build a small fake snapshot + render both serial and concurrent paths,
-    // check outputs are byte-for-byte identical (same voices, same state).
-    let bank = UnifiedSampleBank(capacity: 1024)
+    // Real parity test. Multiple voices triggering simultaneously through
+    // both render paths with identical state — measure max abs diff.
+    //
+    // Floating-point context: renderOfflineConcurrent processes voices in
+    // parallel and accumulates into shared sumL/sumR under `mixLock`. The
+    // lock-acquisition order is non-deterministic, so the order in which
+    // float partial sums are added differs run-to-run. fp32 sum-of-N ULP
+    // error is ~N·ε with ε ≈ 1.19e-7; with ~16 voices that's ~2e-6 worst
+    // case. Tolerance below is 1e-3 (signal-domain), well above the
+    // theoretical bound but tight enough that any real bug shows up.
+
+    let bank = UnifiedSampleBank(capacity: 1024 * 16)
+    // Load a 1024-sample saw wave into the bank so voices have something to
+    // render. saw[i] = (i / 1024) * 2 - 1 — fast to compute, non-zero everywhere.
+    for i in 0..<1024 {
+        bank.samplePointer[i] = Float(i) / 512.0 - 1.0
+    }
+
     let evt  = AtomicRingBuffer<TrackerEvent>(capacity: 16)
     let st   = UnsafeMutablePointer<EngineSharedState>.allocate(capacity: 1)
     st.initialize(to: EngineSharedState())
     defer { st.deallocate() }
+
     let res  = RenderResources(maxFrames: 2048)
     let node = AudioRenderNode(resources: res, statePtr: st, bank: bank,
                                eventBuffer: evt, sampleRate: 44100)
-    st.pointee.bpm = 120
-    st.pointee.ticksPerRow = 6
-    st.pointee.masterVolume = 1.0
-    st.pointee.isPlaying = 1
 
-    let frames = 1024
+    // Build a snapshot with 16 instruments (region pointing at the saw wave)
+    // and a row 0 that fires noteOn on 16 channels — enough voices to make
+    // parallel-vs-serial accumulation order matter.
+    let evSlab = UnsafeMutablePointer<TrackerEvent>.allocate(capacity: kMaxChannels * 64 * 100)
+    evSlab.initialize(repeating: .empty, count: kMaxChannels * 64 * 100)
+    let instSlab = UnsafeMutablePointer<Instrument>.allocate(capacity: 256)
+    instSlab.initialize(repeating: Instrument(), count: 256)
+    let envSlab = UnsafeMutablePointer<Int32>.allocate(capacity: 256)
+    envSlab.initialize(repeating: 0, count: 256)
+    defer { evSlab.deallocate(); instSlab.deallocate(); envSlab.deallocate() }
+
+    for i in 1...16 {
+        var ins = Instrument()
+        var region = SampleRegion(offset: 0, length: 1024)
+        region.loopStart  = 0
+        region.loopLength = 1024
+        region.loopType   = .classic
+        ins.setSingleRegion(region)
+        instSlab[i] = ins
+    }
+    // Fire 16 simultaneous notes at row 0, each on a different channel
+    // with slightly different pitches so resampling math differs per voice.
+    for ch in 0..<16 {
+        evSlab[ch] = TrackerEvent(
+            type: .noteOn, channel: UInt8(ch),
+            instrument: UInt8(ch + 1),
+            value1: 220.0 * Float(1.0 + Double(ch) * 0.05),
+            value2: 0.5)
+    }
+    let snap = SongSnapshot(events: evSlab, instruments: instSlab,
+                            orderList: [0], songLength: 1,
+                            volEnv: envSlab, panEnv: envSlab, pitchEnv: envSlab)
+
+    func resetState() {
+        st.pointee.bpm           = 120
+        st.pointee.ticksPerRow   = 6
+        st.pointee.masterVolume  = 1.0
+        st.pointee.isPlaying     = 1
+        st.pointee.samplesProcessed = 0
+        st.pointee.currentOrder      = 0
+        st.pointee.currentEngineRow  = 0
+        for i in 0..<kMaxChannels {
+            res.voices[i].active = false
+            res.channelMemory[i] = 1
+        }
+        node.resetForPlayback()
+    }
+
+    let frames = 8192
     let sL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
     let sR = UnsafeMutablePointer<Float>.allocate(capacity: frames)
     let cL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
@@ -1207,18 +1267,37 @@ autoreleasepool {
     sL.initialize(repeating: 0, count: frames); sR.initialize(repeating: 0, count: frames)
     cL.initialize(repeating: 0, count: frames); cR.initialize(repeating: 0, count: frames)
 
-    let emptySnap = SongSnapshot.createEmpty()
-    let wSerial = node.renderOffline(frames: frames, snap: emptySnap, state: st,
+    resetState()
+    let wSerial = node.renderOffline(frames: frames, snap: snap, state: st,
                                      bufferL: sL, bufferR: sR)
-    // Reset state for the second run.
-    st.pointee.isPlaying = 1; st.pointee.samplesProcessed = 0
-    let wConcurrent = node.renderOfflineConcurrent(frames: frames, snap: emptySnap, state: st,
+    resetState()
+    let wConcurrent = node.renderOfflineConcurrent(frames: frames, snap: snap, state: st,
                                                    bufferL: cL, bufferR: cR)
-    assert(wSerial > 0 && wConcurrent > 0, "Both render paths produce output")
-    // For silent-input case both should produce zero-buffer output.
-    var sumS: Float = 0, sumC: Float = 0
-    for i in 0..<min(wSerial, wConcurrent) { sumS += abs(sL[i]); sumC += abs(cL[i]) }
-    assert(abs(sumS - sumC) < 1e-3, "Concurrent + serial agree on silent render")
+
+    assert(wSerial == wConcurrent, "Both paths render same frame count (got \(wSerial) vs \(wConcurrent))")
+    assert(wSerial > 100, "Render produced meaningful output (got \(wSerial) frames)")
+
+    // Verify both outputs are non-trivial (we did wire up audible voices).
+    var nonzeroS = 0, nonzeroC = 0
+    for i in 0..<wSerial { if sL[i] != 0 { nonzeroS += 1 }; if cL[i] != 0 { nonzeroC += 1 } }
+    assert(nonzeroS > wSerial / 2, "Serial path produced active audio (\(nonzeroS)/\(wSerial))")
+    assert(nonzeroC > wConcurrent / 2, "Concurrent path produced active audio (\(nonzeroC)/\(wConcurrent))")
+
+    // Max abs diff — the actual parity metric.
+    var maxDiff: Float = 0
+    var rmsDiff: Double = 0
+    for i in 0..<min(wSerial, wConcurrent) {
+        let dL = abs(sL[i] - cL[i]); maxDiff = max(maxDiff, dL); rmsDiff += Double(dL * dL)
+        let dR = abs(sR[i] - cR[i]); maxDiff = max(maxDiff, dR); rmsDiff += Double(dR * dR)
+    }
+    rmsDiff = (rmsDiff / Double(2 * min(wSerial, wConcurrent))).squareRoot()
+    print("   max diff: \(maxDiff), rms diff: \(rmsDiff)")
+    // Tolerance: 1e-6 absolute. With the per-voice scratch-slot fix, the only
+    // remaining divergence is fp32 sum-order non-associativity under mixLock;
+    // bounded by ~N·ε with ε ≈ 1.19e-7. 1e-6 catches any future regression
+    // (e.g. a re-introduced scratch-slot collision would jump 5+ orders of
+    // magnitude past this).
+    assert(maxDiff < 1e-6, "Concurrent vs serial within tolerance (max diff \(maxDiff))")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
