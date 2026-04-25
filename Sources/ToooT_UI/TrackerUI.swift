@@ -21,29 +21,41 @@ public struct TrackerAppView: View {
     @State private var timeline: Timeline?
     public let documentURL: URL?
     public init(documentURL: URL? = nil) { self.documentURL = documentURL }
-    
+
     @State private var showCommandPalette = false
+    @State private var showCrashRecovery = false
+    @State private var crashRecoveryAutosaves: [URL] = []
 
     public var body: some View {
         ZStack {
             StudioTheme.background.ignoresSafeArea()
-            
+
             if playbackState.isDocumentLoaded {
                 TrackerWorkspace(state: playbackState, host: host, timeline: timeline)
                     .transition(.opacity)
             } else {
                 WelcomeOverlay()
             }
-            
+
             // Global HUDs
             HUDOverlay(state: playbackState)
-            
+
             if showCommandPalette {
                 LegacyCommandPaletteShim(isPresented: $showCommandPalette, state: playbackState)
             }
         }
         .preferredColorScheme(.dark)
-        .onAppear { setupEngine() }
+        .onAppear {
+            setupEngine()
+            checkForCrashRecovery()
+        }
+        .sheet(isPresented: $showCrashRecovery) {
+            CrashRecoveryPromptView(
+                isPresented: $showCrashRecovery,
+                autosaves: crashRecoveryAutosaves,
+                onRestore: { url in loadSong(from: url) },
+                onDismiss: {})
+        }
         .sheet(item: $playbackState.activePluginDialog) { pluginType in 
             PluginDialogContainer(state: playbackState, timeline: timeline, pluginType: pluginType) 
         }
@@ -81,6 +93,19 @@ public struct TrackerAppView: View {
     }
 
     // MARK: - App Actions
+
+    /// On launch, surface autosaves newer than the freshly-opened document. Skips the
+    /// prompt when a documentURL is being loaded (the user picked a file — they don't
+    /// want a recovery sheet over it) or when there's nothing recent to restore.
+    private func checkForCrashRecovery() {
+        guard documentURL == nil else { return }
+        let recent = AudioHost.recentAutosaves(maxAgeSeconds: 24 * 3600)
+        guard !recent.isEmpty else { return }
+        crashRecoveryAutosaves = recent
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            showCrashRecovery = true
+        }
+    }
 
     private func setupEngine() {
         guard host == nil else { return }
