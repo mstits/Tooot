@@ -1301,6 +1301,91 @@ autoreleasepool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 55. Automation snapshot — concurrent swap + lifetime
+// ─────────────────────────────────────────────────────────────────────────────
+// Stress-tests the atomic-swap + deallocation-queue lifecycle.
+// Spawns concurrent swappers + readers, then asserts every snapshot we
+// retained eventually deallocates after processDeallocations() drains.
+print("\n── 55. Automation Snapshot Stress ──────────────────────────────────")
+MainActor.assumeIsolated {
+    let bank = UnifiedSampleBank(capacity: 1024)
+    let evt  = AtomicRingBuffer<TrackerEvent>(capacity: 16)
+    let st   = UnsafeMutablePointer<EngineSharedState>.allocate(capacity: 1)
+    st.initialize(to: EngineSharedState())
+    defer { st.deallocate() }
+    let res  = RenderResources(maxFrames: 1024)
+    let node = AudioRenderNode(resources: res, statePtr: st, bank: bank,
+                               eventBuffer: evt, sampleRate: 44100)
+
+    // Hand the node a long sequence of distinct snapshots from the main thread
+    // while a parallel reader fetches the current snapshot via the public-ish
+    // API path (we exercise it indirectly through swapAutomationSnapshot —
+    // every published snapshot must be released after processDeallocations
+    // drains, except the final one still pinned by the atomic).
+    let totalSwaps = 500
+    var weakRefs: [WeakAutomationRef] = []
+    weakRefs.reserveCapacity(totalSwaps)
+
+    // Concurrent reader thread — exercises the lock-free read path implicitly
+    // via repeated render block calls (renderOffline reads currentAutomationSnapshot
+    // every tick).
+    let readerDone = DispatchSemaphore(value: 0)
+    DispatchQueue.global(qos: .userInitiated).async {
+        let outL = UnsafeMutablePointer<Float>.allocate(capacity: 256)
+        let outR = UnsafeMutablePointer<Float>.allocate(capacity: 256)
+        defer { outL.deallocate(); outR.deallocate() }
+        let emptySnap = SongSnapshot.createEmpty()
+        for _ in 0..<200 {
+            st.pointee.isPlaying = 1
+            _ = node.renderOffline(frames: 256, snap: emptySnap, state: st,
+                                   bufferL: outL, bufferR: outR)
+        }
+        readerDone.signal()
+    }
+
+    // Main thread: swap N distinct snapshots.
+    for i in 0..<totalSwaps {
+        var lane = ToooT_Core.AutomationLane(targetID: "ch.0.volume")
+        lane.setPoint(beat: 0, value: Float(i) / Float(totalSwaps))
+        let snap = AutomationSnapshot(lanes: ["ch.0.volume": lane])
+        weakRefs.append(WeakAutomationRef(snap))
+        node.swapAutomationSnapshot(snap)
+    }
+
+    readerDone.wait()
+
+    // Drain the deallocation queue. After this, only the most recently published
+    // snapshot should still be alive (held by the atomic pointer).
+    node.processDeallocations()
+    // Allow autoreleasepools to drain on the test's local frames before we count.
+    autoreleasepool {}
+
+    var alive = 0
+    for ref in weakRefs { if ref.get() != nil { alive += 1 } }
+    // Tolerance: everything before the last swap must be released. The last
+    // swap's snapshot is still pinned by the atomic — that's expected.
+    assert(alive <= 1, "All retired automation snapshots released (alive=\(alive)/\(totalSwaps))")
+
+    // Final swap to .empty, drain, expect zero alive.
+    node.swapAutomationSnapshot(AutomationSnapshot.empty)
+    node.processDeallocations()
+    autoreleasepool {}
+    var aliveAfterFinal = 0
+    for ref in weakRefs { if ref.get() != nil { aliveAfterFinal += 1 } }
+    assert(aliveAfterFinal == 0,
+           "After final swap to .empty + drain, all created snapshots are gone (alive=\(aliveAfterFinal))")
+    print("  swept \(totalSwaps) swaps with concurrent reader; \(aliveAfterFinal) leaks")
+}
+
+/// Holder for a `weak` reference. `WeakReference<T> where T: AnyObject` isn't
+/// in stdlib so we wrap manually — used by UAT 55 to verify deallocation.
+final class WeakAutomationRef {
+    weak var ref: AutomationSnapshot?
+    init(_ s: AutomationSnapshot) { self.ref = s }
+    func get() -> AutomationSnapshot? { ref }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 54. GPU_DSP — kernel pipeline availability
 // ─────────────────────────────────────────────────────────────────────────────
 print("\n── 54. GPU_DSP Pipelines ───────────────────────────────────────────")

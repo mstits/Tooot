@@ -292,10 +292,14 @@ public final class AudioRenderNode: Sendable {
     /// Project sample rate in Hz. Fixed at render-node init — used in tick math
     /// (`samplesPerTick = sampleRate * 2.5 / bpm`), voice resampling, LUFS filters.
     public let sampleRate: Double
-    private let deallocationQueue: AtomicRingBuffer<UInt> = .init(capacity: 128)
+    /// Sized at 2048 entries — `push` silently drops when full, which would leak
+    /// retained snapshots. 2048 absorbs realistic main-thread bursts (UI drag at
+    /// 60 Hz between 30 Hz Timeline drains accumulates ~2 entries; project load
+    /// might burst a handful) with multiple orders of magnitude of headroom.
+    private let deallocationQueue: AtomicRingBuffer<UInt> = .init(capacity: 2048)
     /// Separate queue for automation snapshots so we can release them on a
     /// MainActor drain without confusing the song-snapshot deallocator.
-    private let automationDealloc: AtomicRingBuffer<UInt> = .init(capacity: 64)
+    private let automationDealloc: AtomicRingBuffer<UInt> = .init(capacity: 2048)
     private let tickAccumulator: Atomic<Double> = .init(0.0)
     /// Master-bus loudness + true-peak + phase metering. Writes back into
     /// `sharedState.{truePeak, lufsMomentary, lufsShortTerm, lufsIntegrated, phaseCorrelation}`
