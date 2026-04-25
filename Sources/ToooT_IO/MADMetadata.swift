@@ -113,7 +113,6 @@ public enum MADMetadataReader {
             .replacingOccurrences(of: "\0", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
-        let songLength: Int = data.count > 950 ? Int(data[950]) : 0
         var maxPat = 0
         if data.count > 1080 {
             for i in 0..<128 where 952 + i < data.count {

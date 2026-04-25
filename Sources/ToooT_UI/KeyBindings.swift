@@ -114,5 +114,5 @@ public extension KeyBindingSet {
         KeyBinding(commandID: "midi.panic",         key: ".", modifiers: ["cmd"])
     ])
 
-    public static let allPresets: [KeyBindingSet] = [toooTDefault, proToolsStyle, logicStyle]
+    static let allPresets: [KeyBindingSet] = [toooTDefault, proToolsStyle, logicStyle]
 }

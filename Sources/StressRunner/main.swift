@@ -128,7 +128,7 @@ scenario("Random UMP dispatch (10 000 packets)") {
     let mgr = MIDI2Manager()
     // We can't easily invoke dispatchUMP without a MIDIEventPacket; simulate by
     // driving the fuzzer's UMP generator and pushing directly.
-    var ok = true
+    let ok = true
     for _ in 0..<10_000 {
         let (w0, _) = Fuzzer.generateUMPPacket()
         // Extract a channel/note and synthesize a TrackerEvent to push — this

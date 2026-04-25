@@ -240,7 +240,7 @@ public final class AudioHost {
     /// intervals so Instruments.app shows where launch time goes. Target: <3 s
     /// cold start. The signpost log category is "ColdLaunch" under subsystem
     /// com.apple.ProjectToooT — filter Instruments by that.
-    nonisolated(unsafe) private static let launchLog = OSLog(
+    private static let launchLog = OSLog(
         subsystem: "com.apple.ProjectToooT", category: "ColdLaunch")
 
     public func setup() async throws {

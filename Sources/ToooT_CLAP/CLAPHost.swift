@@ -158,7 +158,7 @@ public final class CLAPPluginInstance: @unchecked Sendable {
             Self.cleanup(host: host, strings: strings, bundle: bundle)
             return nil
         }
-        plugin.pointee.start_processing?(plugin)
+        _ = plugin.pointee.start_processing?(plugin)
 
         self.bundle      = bundle
         self.plugin      = plugin
@@ -217,7 +217,6 @@ public final class CLAPPluginInstance: @unchecked Sendable {
                             channel_count: 2,
                             latency: 0,
                             constant_mask: 0)
-
                         var inEvents  = clap_input_events_t(
                             ctx: nil,
                             size: { _ in 0 },
@@ -226,18 +225,29 @@ public final class CLAPPluginInstance: @unchecked Sendable {
                             ctx: nil,
                             try_push: { _, _ in false })
 
-                        var proc = clap_process_t(
-                            steady_time:         0,
-                            frames_count:        frames,
-                            transport:           nil,
-                            audio_inputs:        &audioIn,
-                            audio_inputs_count:  1,
-                            audio_outputs:       &audioOut,
-                            audio_outputs_count: 1,
-                            in_events:           &inEvents,
-                            out_events:          &outEvents)
-
-                        _ = processFn(plugin, &proc)
+                        // Each pointer field is captured into clap_process_t and used
+                        // synchronously inside processFn. Nested withUnsafeMutablePointer
+                        // ensures the addresses are stable for the duration of the call —
+                        // satisfies the [#TemporaryPointers] check.
+                        withUnsafeMutablePointer(to: &audioIn) { aiP in
+                            withUnsafeMutablePointer(to: &audioOut) { aoP in
+                                withUnsafeMutablePointer(to: &inEvents) { ieP in
+                                    withUnsafeMutablePointer(to: &outEvents) { oeP in
+                                        var proc = clap_process_t(
+                                            steady_time:         0,
+                                            frames_count:        frames,
+                                            transport:           nil,
+                                            audio_inputs:        aiP,
+                                            audio_inputs_count:  1,
+                                            audio_outputs:       aoP,
+                                            audio_outputs_count: 1,
+                                            in_events:           ieP,
+                                            out_events:          oeP)
+                                        _ = processFn(plugin, &proc)
+                                    }
+                                }
+                            }
+                        }
                         _ = lpp; _ = rpp
                     }
                 }

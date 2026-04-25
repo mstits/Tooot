@@ -369,7 +369,7 @@ public enum OfflineDSP {
 
         // Seed with the first window verbatim.
         let firstCopy = min(windowSize, count)
-        output.withUnsafeMutableBufferPointer { buf in
+        _ = output.withUnsafeMutableBufferPointer { buf in
             memcpy(buf.baseAddress!, src, firstCopy * MemoryLayout<Float>.size)
         }
 

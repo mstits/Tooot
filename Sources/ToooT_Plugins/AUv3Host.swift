@@ -21,7 +21,7 @@ public final class AUv3HostManager: @unchecked Sendable {
         discoverPlugins()
     }
 
-    nonisolated(unsafe) private static let scanLog = OSLog(
+    private static let scanLog = OSLog(
         subsystem: "com.apple.ProjectToooT", category: "ColdLaunch")
 
     public func discoverPlugins() {
