@@ -111,6 +111,23 @@ public final class Timeline {
             volEnv:      state.volEnvEnabledPtr,
             panEnv:      state.panEnvEnabledPtr,
             pitchEnv:    state.pitchEnvEnabledPtr))
+
+        // PlaybackState.automationLanes is the legacy UI Bezier representation in
+        // Helpers.swift; convert to the Core lane type that the render evaluator
+        // consumes. parameter → targetID, time → beat, value → Float, controlPoint
+        // origin → linear (anything else → sCurve).
+        var perChannel: [Int: [ToooT_Core.AutomationLane]] = [:]
+        for (ch, uiLanes) in state.automationLanes {
+            perChannel[ch] = uiLanes.map { ui -> ToooT_Core.AutomationLane in
+                var core = ToooT_Core.AutomationLane(targetID: ui.parameter)
+                for p in ui.points {
+                    core.setPoint(beat: p.time, value: Float(p.value),
+                                  curveOut: p.controlPoint == .zero ? .linear : .sCurve)
+                }
+                return core
+            }
+        }
+        renderNode?.swapAutomationSnapshot(AutomationSnapshot.build(from: perChannel))
     }
     
     // MARK: - Tempo Overrides

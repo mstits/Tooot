@@ -88,6 +88,35 @@ public struct AutomationLane: Codable, Sendable, Identifiable {
     }
 }
 
+/// Immutable, render-thread-safe view of every active lane in a project.
+///
+/// Realtime render reads via `AudioRenderNode.swapAutomationSnapshot` (atomic
+/// pointer exchange — no locks). Built fresh from `PlaybackState.automationLanes`
+/// whenever the user touches a point. Treated like `SongSnapshot`: write once,
+/// publish atomically, never mutate after publication.
+public final class AutomationSnapshot: @unchecked Sendable {
+    public let lanes: [String: AutomationLane]
+    public init(lanes: [String: AutomationLane]) { self.lanes = lanes }
+
+    /// Empty snapshot — used as the default at engine init when no lanes exist.
+    public static let empty = AutomationSnapshot(lanes: [:])
+
+    /// Builds a snapshot from `PlaybackState.automationLanes` (`[Int: [AutomationLane]]`,
+    /// keyed by channel index). The lane's own `targetID` is used as the dictionary key —
+    /// callers can mix per-channel and global (master/bus) lanes by inserting them under
+    /// any channel bucket; only `targetID` is consulted at evaluation time.
+    public static func build(from perChannel: [Int: [AutomationLane]]) -> AutomationSnapshot {
+        var merged: [String: AutomationLane] = [:]
+        merged.reserveCapacity(perChannel.values.reduce(0) { $0 + $1.count })
+        for (_, list) in perChannel {
+            for lane in list where lane.enabled && !lane.points.isEmpty {
+                merged[lane.targetID] = lane
+            }
+        }
+        return AutomationSnapshot(lanes: merged)
+    }
+}
+
 /// A batch of lanes for a project. Stored on PlaybackState / Arrangement.
 public final class AutomationBank: @unchecked Sendable, Codable {
     public private(set) var lanes: [String: AutomationLane] = [:]

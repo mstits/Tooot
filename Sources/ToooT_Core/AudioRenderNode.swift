@@ -278,6 +278,10 @@ public final class RenderResources: @unchecked Sendable {
 
 public final class AudioRenderNode: Sendable {
     private let _snapshotPtr: Atomic<UInt>
+    /// Atomic pointer to the current AutomationSnapshot. Render thread reads via
+    /// `Unmanaged.takeUnretainedValue` — main thread publishes via
+    /// `swapAutomationSnapshot`. Same lifecycle pattern as song snapshots.
+    private let _automationPtr: Atomic<UInt> = .init(0)
     public let resources:  RenderResources
     nonisolated(unsafe) public let statePtr: UnsafeMutablePointer<EngineSharedState>
     public let sampleBank: UnifiedSampleBank
@@ -286,6 +290,9 @@ public final class AudioRenderNode: Sendable {
     /// (`samplesPerTick = sampleRate * 2.5 / bpm`), voice resampling, LUFS filters.
     public let sampleRate: Double
     private let deallocationQueue: AtomicRingBuffer<UInt> = .init(capacity: 128)
+    /// Separate queue for automation snapshots so we can release them on a
+    /// MainActor drain without confusing the song-snapshot deallocator.
+    private let automationDealloc: AtomicRingBuffer<UInt> = .init(capacity: 64)
     private let tickAccumulator: Atomic<Double> = .init(0.0)
     /// Master-bus loudness + true-peak + phase metering. Writes back into
     /// `sharedState.{truePeak, lufsMomentary, lufsShortTerm, lufsIntegrated, phaseCorrelation}`
@@ -327,7 +334,13 @@ public final class AudioRenderNode: Sendable {
                 else { Unmanaged<SnapshotBox>.fromOpaque(ptr).release() }
             }
         }
-
+        let aRaw = _automationPtr.load(ordering: .relaxed)
+        if aRaw != 0 { Unmanaged<AutomationSnapshot>.fromOpaque(UnsafeRawPointer(bitPattern: aRaw)!).release() }
+        while let raw = automationDealloc.pop() {
+            if let ptr = UnsafeMutableRawPointer(bitPattern: raw) {
+                Unmanaged<AutomationSnapshot>.fromOpaque(ptr).release()
+            }
+        }
     }
 
     public func swapSnapshot(_ new: SongSnapshot) {
@@ -335,6 +348,23 @@ public final class AudioRenderNode: Sendable {
         let newRaw  = UInt(bitPattern: Unmanaged.passRetained(newBox).toOpaque())
         let oldRaw  = _snapshotPtr.exchange(newRaw, ordering: .acquiringAndReleasing)
         if oldRaw != 0 { _ = deallocationQueue.push(oldRaw) }
+    }
+
+    /// Publishes a new automation snapshot atomically. Pass `.empty` to clear all
+    /// lanes. Old snapshot is released on the next MainActor `processDeallocations`.
+    public func swapAutomationSnapshot(_ new: AutomationSnapshot) {
+        let newRaw = UInt(bitPattern: Unmanaged.passRetained(new).toOpaque())
+        let old = _automationPtr.exchange(newRaw, ordering: .acquiringAndReleasing)
+        if old != 0 { _ = automationDealloc.push(old) }
+    }
+
+    /// Render-thread-only: reads the current automation snapshot without a retain.
+    /// Lifetime is guaranteed by the deallocation queue draining only on MainActor.
+    @inline(__always)
+    fileprivate func currentAutomationSnapshot() -> AutomationSnapshot? {
+        let raw = _automationPtr.load(ordering: .acquiring)
+        guard raw != 0, let p = UnsafeRawPointer(bitPattern: raw) else { return nil }
+        return Unmanaged<AutomationSnapshot>.fromOpaque(p).takeUnretainedValue()
     }
 
     @MainActor
@@ -346,6 +376,11 @@ public final class AudioRenderNode: Sendable {
             if let ptr = UnsafeMutableRawPointer(bitPattern: raw) {
                 if isRawPointer { ptr.deallocate() }
                 else { Unmanaged<SnapshotBox>.fromOpaque(ptr).release() }
+            }
+        }
+        while let raw = automationDealloc.pop() {
+            if let ptr = UnsafeMutableRawPointer(bitPattern: raw) {
+                Unmanaged<AutomationSnapshot>.fromOpaque(ptr).release()
             }
         }
     }
@@ -374,6 +409,69 @@ public final class AudioRenderNode: Sendable {
         masterMeter.reset()
     }
 
+    // MARK: - Automation evaluator
+
+    /// Walks every lane in `auto` and writes its value at `beat` into the matching
+    /// RT-visible parameter. Called at row boundaries — fast enough to be fine
+    /// inside the audio callback (single dictionary scan per row, ~30 Hz at 125 BPM).
+    ///
+    /// Target ID grammar (string-keyed; parsed by hand to avoid allocations):
+    ///   ch.<N>.volume        → res.channelVolumes[N]
+    ///   ch.<N>.pan           → res.channelPans[N]
+    ///   ch.<N>.send.<bus>    → res.sendAmounts[N * kAuxBusCount + bus]
+    ///   bus.<B>.volume       → res.busVolumes[B]
+    ///   master.volume        → state.pointee.masterVolume
+    ///
+    /// Unknown target IDs are ignored — callers can stash custom IDs (e.g. plugin
+    /// parameter automation) in the same bank and route them elsewhere.
+    @inline(__always)
+    fileprivate static func applyAutomation(
+        _ auto: AutomationSnapshot,
+        beat: Double,
+        res: RenderResources,
+        state: UnsafeMutablePointer<EngineSharedState>
+    ) {
+        for (target, lane) in auto.lanes {
+            guard let v = lane.evaluate(at: beat) else { continue }
+            applyTarget(target, value: v, res: res, state: state)
+        }
+    }
+
+    @inline(__always)
+    private static func applyTarget(
+        _ target: String,
+        value: Float,
+        res: RenderResources,
+        state: UnsafeMutablePointer<EngineSharedState>
+    ) {
+        if target == "master.volume" {
+            state.pointee.masterVolume = max(0, value)
+            return
+        }
+        // Split by '.' — small, no allocations beyond the ArraySlice that Swift
+        // creates for the Substring sequence (cheap; bounded to 4 segments).
+        let parts = target.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count >= 3 else { return }
+        let kind = parts[0]
+        guard let idx = Int(parts[1]) else { return }
+        let attr = parts[2]
+        if kind == "ch" {
+            guard idx >= 0, idx < kMaxChannels else { return }
+            switch attr {
+            case "volume": res.channelVolumes[idx] = max(0, value)
+            case "pan":    res.channelPans[idx] = min(1, max(0, value))
+            case "send":
+                guard parts.count >= 4, let busI = Int(parts[3]),
+                      busI >= 0, busI < kAuxBusCount else { return }
+                res.sendAmounts[idx * kAuxBusCount + busI] = max(0, value)
+            default: return
+            }
+        } else if kind == "bus" {
+            guard idx >= 0, idx < kAuxBusCount, attr == "volume" else { return }
+            res.busVolumes[idx] = max(0, value)
+        }
+    }
+
     // MARK: - Shared Sequencer Tick Logic
 
     /// Processes one sequencer tick: row advancement, event dispatch, per-tick effects, and
@@ -391,7 +489,8 @@ public final class AudioRenderNode: Sendable {
         state:       UnsafeMutablePointer<EngineSharedState>,
         res:         RenderResources,
         currentTick: Int,
-        wrapOnEnd:   Bool
+        wrapOnEnd:   Bool,
+        auto:        AutomationSnapshot? = nil
     ) -> Bool {
 
         if state.pointee.isPlaying != 0 && currentTick == 0 {
@@ -403,6 +502,15 @@ public final class AudioRenderNode: Sendable {
             let patternNumber = orderIdx < snap.orderList.count ? snap.orderList[orderIdx] : 0
             let absRow        = (patternNumber * 64) + Int(state.pointee.currentEngineRow)
             res.currentRowIndex = absRow
+
+            // Automation: evaluate every active lane against the current beat
+            // and write into RT params before voices are triggered for this row.
+            // Tracker convention: 4 rows = 1 beat (16th-note grid in 4/4).
+            if let auto, !auto.lanes.isEmpty {
+                let beat = Double(absRow) / 4.0
+                applyAutomation(auto, beat: beat, res: res, state: state)
+            }
+
             var nextRow       = state.pointee.currentEngineRow + 1
             var nextOrder     = state.pointee.currentOrder
             var jumpRow: Int32? = nil
@@ -629,7 +737,8 @@ public final class AudioRenderNode: Sendable {
                     let currentTick = Int(state.pointee.samplesProcessed) % Int(max(1, state.pointee.ticksPerRow))
                     state.pointee.samplesProcessed = (state.pointee.samplesProcessed + 1) % 1000000
 
-                    AudioRenderNode.processTickSequencer(snap: snap, state: state, res: res, currentTick: currentTick, wrapOnEnd: true)
+                    let autoSnap = node.currentAutomationSnapshot()
+                    AudioRenderNode.processTickSequencer(snap: snap, state: state, res: res, currentTick: currentTick, wrapOnEnd: true, auto: autoSnap)
                     
                     // Metronome trigger: Trigger on tick 0 of every row if enabled
                     if state.pointee.isMetronomeEnabled != 0 && currentTick == 0 {
@@ -830,7 +939,8 @@ state.pointee.peakLevel = max(peakL, peakR)
                     let currentTick = Int(state.pointee.samplesProcessed) % Int(max(1, state.pointee.ticksPerRow))
                     state.pointee.samplesProcessed = (state.pointee.samplesProcessed + 1) % 1_000_000
 
-                    if AudioRenderNode.processTickSequencer(snap: snap, state: state, res: res, currentTick: currentTick, wrapOnEnd: false) {
+                    let autoSnap = self.currentAutomationSnapshot()
+                    if AudioRenderNode.processTickSequencer(snap: snap, state: state, res: res, currentTick: currentTick, wrapOnEnd: false, auto: autoSnap) {
                         break
                     }
 
@@ -943,8 +1053,10 @@ state.pointee.peakLevel = max(peakL, peakR)
                 if tickRemain == 0 {
                     let currentTick = Int(state.pointee.samplesProcessed) % Int(max(1, state.pointee.ticksPerRow))
                     state.pointee.samplesProcessed = (state.pointee.samplesProcessed + 1) % 1_000_000
+                    let autoSnap = self.currentAutomationSnapshot()
                     if AudioRenderNode.processTickSequencer(snap: snap, state: state, res: res,
-                                                            currentTick: currentTick, wrapOnEnd: false) {
+                                                            currentTick: currentTick, wrapOnEnd: false,
+                                                            auto: autoSnap) {
                         break
                     }
                     let spt   = (self.sampleRate * 2.5) / Double(max(32, state.pointee.bpm))

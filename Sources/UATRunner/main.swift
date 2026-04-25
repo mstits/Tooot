@@ -1337,6 +1337,75 @@ autoreleasepool {
     let reloaded = AutomationBank.importFromPluginStateData(data)
     assert(reloaded?.evaluate(targetID: "ch.0.volume", at: 4) == 1,
            "Automation lane survives JSON round-trip")
+
+    // ── Render-path evaluator ──
+    // Build an AutomationSnapshot covering each supported target ID, push it through
+    // the public render-thread API, then verify each RT param landed at the lane value
+    // for the requested beat. RenderResources is heap-allocated so we don't touch the
+    // engine — just exercise the static `applyAutomation` indirectly by going through
+    // `swapAutomationSnapshot` and a tick.
+    let res = RenderResources(maxFrames: 1024)
+    let statePtr = UnsafeMutablePointer<EngineSharedState>.allocate(capacity: 1)
+    statePtr.initialize(to: EngineSharedState())
+    statePtr.pointee.bpm           = 125
+    statePtr.pointee.ticksPerRow   = 6
+    statePtr.pointee.masterVolume  = 1.0
+    defer { statePtr.deallocate() }
+
+    var lanes: [String: ToooT_Core.AutomationLane] = [:]
+    for (tid, val) in [
+        ("ch.0.volume", Float(0.42)),
+        ("ch.1.pan",    Float(0.7)),
+        ("ch.2.send.1", Float(0.3)),
+        ("bus.2.volume", Float(1.5)),
+        ("master.volume", Float(0.55))
+    ] {
+        var l = ToooT_Core.AutomationLane(targetID: tid)
+        l.setPoint(beat: 0, value: val)
+        l.setPoint(beat: 100, value: val)  // flat — value is the same anywhere
+        lanes[tid] = l
+    }
+    let snap = AutomationSnapshot(lanes: lanes)
+    assert(snap.lanes.count == 5, "Snapshot holds all 5 lanes")
+
+    // Build via PlaybackState-style perChannel map.
+    let perCh: [Int: [ToooT_Core.AutomationLane]] = [
+        0: [lanes["ch.0.volume"]!],
+        1: [lanes["ch.1.pan"]!],
+        2: [lanes["ch.2.send.1"]!, lanes["bus.2.volume"]!, lanes["master.volume"]!]
+    ]
+    let built = AutomationSnapshot.build(from: perCh)
+    assert(built.lanes.count == 5, "build() merges per-channel lanes by targetID")
+
+    // ─ Render-path verification: drive the engine for one tick with the snapshot
+    //   published, then read the RT-visible params.
+    let evtBuf = AtomicRingBuffer<TrackerEvent>(capacity: 8)
+    let bank2  = UnifiedSampleBank(capacity: 1024)
+    let node = AudioRenderNode(resources: res, statePtr: statePtr, bank: bank2,
+                               eventBuffer: evtBuf, sampleRate: 48000)
+    node.swapAutomationSnapshot(snap)
+    statePtr.pointee.isPlaying = 1
+
+    // Render one block — long enough for at least one row boundary to fire.
+    let frames = 4096
+    let outL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let outR = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    outL.initialize(repeating: 0, count: frames)
+    outR.initialize(repeating: 0, count: frames)
+    defer { outL.deallocate(); outR.deallocate() }
+    _ = node.renderOffline(frames: frames, snap: SongSnapshot.createEmpty(),
+                           state: statePtr, bufferL: outL, bufferR: outR)
+
+    assert(abs(res.channelVolumes[0] - 0.42) < 1e-5,
+           "automation wrote ch.0.volume → 0.42 (got \(res.channelVolumes[0]))")
+    assert(abs(res.channelPans[1] - 0.7) < 1e-5,
+           "automation wrote ch.1.pan → 0.7 (got \(res.channelPans[1]))")
+    assert(abs(res.sendAmounts[2 * kAuxBusCount + 1] - 0.3) < 1e-5,
+           "automation wrote ch.2.send.1 → 0.3")
+    assert(abs(res.busVolumes[2] - 1.5) < 1e-5,
+           "automation wrote bus.2.volume → 1.5")
+    assert(abs(statePtr.pointee.masterVolume - 0.55) < 1e-5,
+           "automation wrote master.volume → 0.55")
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
