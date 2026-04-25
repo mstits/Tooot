@@ -1268,7 +1268,7 @@ autoreleasepool {
     assert(at8.count == 1 && at8[0].1.name == "Verse", "beat 8 → Verse active")
 
     // Fade envelope.
-    var fadeClip = Clip(kind: .pattern, name: "F",
+    let fadeClip = Clip(kind: .pattern, name: "F",
                         start: Beats(0), duration: Beats(4),
                         fadeInBeats: Beats(1), fadeOutBeats: Beats(1),
                         gainLinear: 1.0)
@@ -1276,7 +1276,6 @@ autoreleasepool {
            "Fade-in attenuates at halfway through fade window")
     assert(fadeClip.envelopeAmplitude(at: Beats(2.0)) == 1.0,
            "Clip body is at unity gain")
-    _ = fadeClip
 
     // Serialization round-trip.
     let data = arr.exportAsPluginStateData()

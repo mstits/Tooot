@@ -9,6 +9,12 @@ DerivedData/
 *.app/
 *.app
 
+# Release artifacts (DMGs, dSYMs, signed builds)
+dist/
+*.dmg
+*.dSYM
+*.zip
+
 # OS X
 .DS_Store
 .AppleDouble
