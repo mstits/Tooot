@@ -565,13 +565,415 @@ public struct SpectralCanvasView: View {
 }
 
 public struct NeuralIntelligenceView: View {
-    @Bindable var state: PlaybackState; let timeline: Timeline?; let host: AudioHost?
-    public init(state: PlaybackState, timeline: Timeline? = nil, host: AudioHost? = nil) { self.state = state; self.timeline = timeline; self.host = host }
-    public var body: some View { ScrollView { VStack(spacing: 24) { HStack { VStack(alignment: .leading) { Text("NEURAL INTELLIGENCE").font(.system(size: 14, weight: .black, design: .monospaced)).foregroundStyle(StudioTheme.gradient); Text("Post-Human Generative Algorithms").font(.system(size: 8, weight: .bold)).foregroundColor(.gray) }; Spacer(); Image(systemName: "brain.head.profile").font(.title2).foregroundColor(.purple) }; VStack(alignment: .leading, spacing: 12) { Text("SYNTHESIS TIER").font(.system(size: 9, weight: .bold)).foregroundColor(.gray); Picker("", selection: $state.activeTier) { ForEach(SynthesisTier.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented) }.padding(16).background(Color.black.opacity(0.3)).cornerRadius(12); LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) { AIButton(label: "MARKOV MELODY", systemImage: "chart.bar.xaxis") { markovMelody() }; AIButton(label: "EUCLIDEAN BEAT", systemImage: "circle.grid.3x3.fill") { drumRephase() }; AIButton(label: "L-SYSTEM ARP", systemImage: "leaf.fill") { lSystemGen() }; AIButton(label: "NEURAL HARMONY", systemImage: "tuningfork") { neuralHarmony() } }; VStack(alignment: .leading, spacing: 12) { Text("TIER PARAMETERS").font(.system(size: 9, weight: .bold)).foregroundColor(.gray); switch state.activeTier { case .carbon: TierKnob(label: "CORRUPTION", value: $state.carbonCorruption); TierKnob(label: "GLITCH RATE", value: $state.carbonGlitchRate); case .biological: TierKnob(label: "ARRHYTHMIA", value: $state.bioArrhythmiaRate); TierKnob(label: "BREATHINESS", value: $state.bioBreathiness); case .xenomorph: TierKnob(label: "FRACTAL DIM", value: $state.xenoFractalDim); TierKnob(label: "VOID GATE", value: $state.xenoVoidThreshold) } }.padding(16).background(Color.black.opacity(0.3)).cornerRadius(12) }.padding(24) } }
-    private func markovMelody() { Task.detached { let matrix = MarkovTransitionMatrix.shared; let (pat, events) = await MainActor.run { (state.currentPattern, (0..<64*kMaxChannels).map { state.sequencerData.events[(state.currentPattern*64*kMaxChannels) + $0] }) }; var prev: Int? = nil; for r in 0..<64 { let ev = events[r * kMaxChannels]; if ev.type == .noteOn { let m = Int(12.0 * log2(Double(ev.value1) / 440.0) + 69.0).clamped(to: 0...127); if let p = prev { matrix.observe(from: p, to: m) }; prev = m } }; matrix.normalize(); var seed = prev ?? 60; var results = [(Int, Float)](); for r in stride(from: 0, to: 64, by: 4) { seed = matrix.predict(from: seed).clamped(to: 36...84); results.append((r, Float(440.0 * pow(2.0, (Double(seed) - 69.0) / 12.0)))) }; await MainActor.run { state.snapshotForUndo(); for (r, f) in results { state.sequencerData.events[(pat * 64 + r) * kMaxChannels + 4] = TrackerEvent(type: .noteOn, channel: 4, instrument: 1, value1: f) }; timeline?.publishSnapshot(); state.textureInvalidationTrigger += 1; state.showStatus("Markov Generated") } } }
-    private func drumRephase() { let kick = EuclideanGenerator.generate(pulses: 4, steps: 16); let snare = EuclideanGenerator.generate(pulses: 2, steps: 16); state.snapshotForUndo(); let pat = state.currentPattern; for i in 0..<64 { let r = i % 16; let off = (pat * 64 + i) * kMaxChannels; if kick[r] { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440) }; if snare[r] { state.sequencerData.events[off + 1] = TrackerEvent(type: .noteOn, channel: 1, instrument: 2, value1: 440) } }; timeline?.publishSnapshot(); state.textureInvalidationTrigger += 1; state.showStatus("Euclidean Generated") }
-    private func lSystemGen() { let seq = LSystemGenerator.fibonacci(seed: 0, iterations: 4); state.snapshotForUndo(); let pat = state.currentPattern; for (i, val) in seq.prefix(64).enumerated() { let f = Float(261.63 * pow(2.0, Double(val) / 12.0)); state.sequencerData.events[(pat * 64 + i) * kMaxChannels + 5] = TrackerEvent(type: .noteOn, channel: 5, instrument: 1, value1: f) }; timeline?.publishSnapshot(); state.textureInvalidationTrigger += 1; state.showStatus("L-System Generated") }
-    private func neuralHarmony() { state.snapshotForUndo(); let pat = state.currentPattern; for r in 0..<64 { let off = (pat * 64 + r) * kMaxChannels; let ev = state.sequencerData.events[off]; if ev.type == .noteOn { state.sequencerData.events[off + 2] = TrackerEvent(type: .noteOn, channel: 2, instrument: ev.instrument, value1: ev.value1 * 1.4983) } }; timeline?.publishSnapshot(); state.textureInvalidationTrigger += 1; state.showStatus("Harmony Generated") }
+    @Bindable var state: PlaybackState
+    let timeline: Timeline?
+    let host: AudioHost?
+
+    @State private var genStyle: GenerativeStyle = .techno
+    @State private var genIntensity: Double = 0.5
+    @State private var genComplexity: Double = 0.5
+    @State private var genKey: Int = 0          // 0 = C, 11 = B
+    @State private var genScale: ScaleKind = .major
+    @State private var genVariations: Int = 4
+    @State private var genTargetChannel: Int = 0
+
+    public init(state: PlaybackState, timeline: Timeline? = nil, host: AudioHost? = nil) {
+        self.state = state; self.timeline = timeline; self.host = host
+    }
+
+    public var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                header
+
+                tierCard
+                generatorsCard
+                parametersCard
+                tierKnobsCard
+
+                Text("All generators write into the current pattern at the selected channel. Cmd+Z undoes the most recent generation.")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .padding(.top, 4)
+            }
+            .padding(24)
+        }
+    }
+
+    // MARK: - Sections
+
+    private var header: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("GENERATIVE")
+                    .font(.system(size: 14, weight: .black, design: .monospaced))
+                    .foregroundStyle(StudioTheme.gradient)
+                Text("Procedural composition tools")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Image(systemName: "wand.and.stars")
+                .font(.title2)
+                .foregroundColor(.purple)
+        }
+    }
+
+    private var tierCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("SYNTHESIS FLAVOR").font(.system(size: 9, weight: .bold)).foregroundColor(.gray)
+            Picker("", selection: $state.activeTier) {
+                ForEach(SynthesisTier.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            Text(tierDescription(state.activeTier))
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .background(Color.black.opacity(0.3))
+        .cornerRadius(10)
+    }
+
+    private var generatorsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("GENERATORS").font(.system(size: 9, weight: .bold)).foregroundColor(.gray)
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                AIButton(label: "MARKOV MELODY",  systemImage: "chart.bar.xaxis")     { markovMelody() }
+                AIButton(label: "EUCLIDEAN BEAT", systemImage: "circle.grid.3x3.fill") { euclideanBeat() }
+                AIButton(label: "L-SYSTEM ARP",   systemImage: "leaf.fill")            { lSystemArp() }
+                AIButton(label: "HARMONY LAYER",  systemImage: "tuningfork")           { harmonyLayer() }
+                AIButton(label: "BASSLINE",       systemImage: "waveform.path")        { generateBassline() }
+                AIButton(label: "DRUM PATTERN",   systemImage: "drum")                 { generateDrumPattern() }
+                AIButton(label: "CHORD PROG",     systemImage: "pianokeys")            { generateChordProgression() }
+                AIButton(label: "VARIATION",      systemImage: "shuffle")              { generateVariation() }
+            }
+        }
+        .padding(14)
+        .background(Color.black.opacity(0.3))
+        .cornerRadius(10)
+    }
+
+    private var parametersCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("GENERATION CONTROLS").font(.system(size: 9, weight: .bold)).foregroundColor(.gray)
+
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("STYLE").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary)
+                    Picker("", selection: $genStyle) {
+                        ForEach(GenerativeStyle.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.menu).frame(maxWidth: .infinity)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("KEY").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary)
+                    Picker("", selection: $genKey) {
+                        ForEach(0..<12, id: \.self) {
+                            Text(["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][$0]).tag($0)
+                        }
+                    }.pickerStyle(.menu).frame(maxWidth: .infinity)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("SCALE").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary)
+                    Picker("", selection: $genScale) {
+                        ForEach(ScaleKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }.pickerStyle(.menu).frame(maxWidth: .infinity)
+                }
+            }
+
+            HStack(spacing: 14) {
+                sliderRow(title: "INTENSITY", value: $genIntensity)
+                sliderRow(title: "COMPLEXITY", value: $genComplexity)
+            }
+
+            HStack(spacing: 14) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("TARGET CHANNEL").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary)
+                    Picker("", selection: $genTargetChannel) {
+                        ForEach(0..<16, id: \.self) { Text("Ch \($0 + 1)").tag($0) }
+                    }.pickerStyle(.menu).frame(maxWidth: .infinity)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("VARIATIONS").font(.system(size: 9, weight: .bold)).foregroundColor(.secondary)
+                    Stepper("\(genVariations)", value: $genVariations, in: 1...16)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.black.opacity(0.3))
+        .cornerRadius(10)
+    }
+
+    private var tierKnobsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("FLAVOR PARAMETERS").font(.system(size: 9, weight: .bold)).foregroundColor(.gray)
+            HStack(spacing: 18) {
+                switch state.activeTier {
+                case .studio:
+                    TierKnob(label: "CORRUPTION", value: $state.studioCorruption)
+                    TierKnob(label: "GLITCH RATE", value: $state.studioGlitchRate)
+                case .organic:
+                    TierKnob(label: "TIMING DRIFT", value: $state.organicTimingDrift)
+                    TierKnob(label: "BREATHINESS", value: $state.organicBreathiness)
+                case .generative:
+                    TierKnob(label: "FRACTAL DIM", value: $state.generativeFractalDim)
+                    TierKnob(label: "VOID GATE", value: $state.generativeVoidThreshold)
+                }
+            }
+        }
+        .padding(14)
+        .background(Color.black.opacity(0.3))
+        .cornerRadius(10)
+    }
+
+    private func sliderRow(title: String, value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.system(size: 9, weight: .bold)).foregroundColor(.secondary)
+                Spacer()
+                Text(String(format: "%.0f%%", value.wrappedValue * 100))
+                    .font(.system(size: 9, design: .monospaced)).foregroundColor(.secondary)
+            }
+            Slider(value: value)
+        }
+    }
+
+    private func tierDescription(_ tier: SynthesisTier) -> String {
+        switch tier {
+        case .studio:     return "Clean, precise, tracker-classic. Default."
+        case .organic:    return "Humanized timing + natural vibrato. Use for ballads, lo-fi, anything that should feel hand-played."
+        case .generative: return "Stochastic, glitchy, experimental. Fractal noise + cellular automata. Use for IDM, ambient, sound design."
+        }
+    }
+
+    // MARK: - Generators
+
+    private func markovMelody() {
+        // Snapshot the inputs the Task needs before crossing actors so we
+        // don't reach back into MainActor-isolated state from inside.
+        let pat = state.currentPattern
+        let stridePerStep = max(1, 8 - Int(genComplexity * 6))
+        let ch = genTargetChannel
+        let eventsCopy = (0..<64 * kMaxChannels).map {
+            state.sequencerData.events[(pat * 64 * kMaxChannels) + $0]
+        }
+        Task.detached {
+            let matrix = MarkovTransitionMatrix.shared
+            var prev: Int? = nil
+            for r in 0..<64 {
+                let ev = eventsCopy[r * kMaxChannels]
+                if ev.type == .noteOn {
+                    let m = Int(12.0 * log2(Double(ev.value1) / 440.0) + 69.0).clamped(to: 0...127)
+                    if let p = prev { matrix.observe(from: p, to: m) }
+                    prev = m
+                }
+            }
+            matrix.normalize()
+            var seed = prev ?? 60
+            var results = [(Int, Float)]()
+            for r in Swift.stride(from: 0, to: 64, by: stridePerStep) {
+                seed = matrix.predict(from: seed).clamped(to: 36...84)
+                results.append((r, Float(440.0 * pow(2.0, (Double(seed) - 69.0) / 12.0))))
+            }
+            await MainActor.run {
+                state.snapshotForUndo(label: "Markov Melody")
+                for (r, f) in results {
+                    state.sequencerData.events[(pat * 64 + r) * kMaxChannels + ch] =
+                        TrackerEvent(type: .noteOn, channel: UInt8(ch), instrument: 1, value1: f)
+                }
+                timeline?.publishSnapshot()
+                state.textureInvalidationTrigger += 1
+                state.showStatus("Generated Markov melody on Ch \(ch + 1)")
+            }
+        }
+    }
+
+    private func euclideanBeat() {
+        let pulses = max(2, Int(2 + genIntensity * 12))
+        let kick   = EuclideanGenerator.generate(pulses: pulses,            steps: 16)
+        let snare  = EuclideanGenerator.generate(pulses: max(1, pulses - 2), steps: 16)
+        state.snapshotForUndo(label: "Euclidean Beat")
+        let pat = state.currentPattern
+        for i in 0..<64 {
+            let r = i % 16
+            let off = (pat * 64 + i) * kMaxChannels
+            if kick[r]  { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440) }
+            if snare[r] { state.sequencerData.events[off + 1] = TrackerEvent(type: .noteOn, channel: 1, instrument: 2, value1: 440) }
+        }
+        timeline?.publishSnapshot()
+        state.textureInvalidationTrigger += 1
+        state.showStatus("Euclidean beat: kick \(pulses)/16, snare \(max(1, pulses - 2))/16")
+    }
+
+    private func lSystemArp() {
+        let iterations = max(2, Int(2 + genComplexity * 4))
+        let seq = LSystemGenerator.fibonacci(seed: UInt8(genKey), iterations: iterations)
+        state.snapshotForUndo(label: "L-System Arp")
+        let pat = state.currentPattern
+        let ch  = genTargetChannel
+        for (i, val) in seq.prefix(64).enumerated() {
+            let f = Float(261.63 * pow(2.0, Double(val) / 12.0))
+            state.sequencerData.events[(pat * 64 + i) * kMaxChannels + ch] =
+                TrackerEvent(type: .noteOn, channel: UInt8(ch), instrument: 1, value1: f)
+        }
+        timeline?.publishSnapshot()
+        state.textureInvalidationTrigger += 1
+        state.showStatus("L-System arp on Ch \(ch + 1) (depth \(iterations))")
+    }
+
+    private func harmonyLayer() {
+        state.snapshotForUndo(label: "Harmony Layer")
+        let pat = state.currentPattern
+        let interval: Float = genIntensity > 0.5 ? 1.4983 : 1.2599   // perfect 5th vs major 3rd
+        for r in 0..<64 {
+            let off = (pat * 64 + r) * kMaxChannels
+            let ev = state.sequencerData.events[off]
+            if ev.type == .noteOn {
+                state.sequencerData.events[off + 2] =
+                    TrackerEvent(type: .noteOn, channel: 2, instrument: ev.instrument, value1: ev.value1 * interval)
+            }
+        }
+        timeline?.publishSnapshot()
+        state.textureInvalidationTrigger += 1
+        state.showStatus(genIntensity > 0.5 ? "Harmony at perfect 5th" : "Harmony at major 3rd")
+    }
+
+    private func generateBassline() {
+        state.snapshotForUndo(label: "Bassline")
+        let pat = state.currentPattern
+        let scaleSteps = genScale.intervalsFromRoot
+        let rootMidi   = 36 + genKey
+        let stepLen    = max(1, Int(8 - genComplexity * 6))
+        let ch = genTargetChannel
+        for r in Swift.stride(from: 0, to: 64, by: stepLen) {
+            let degree = Int.random(in: 0..<scaleSteps.count)
+            let midi   = rootMidi + scaleSteps[degree]
+            let f = Float(440.0 * pow(2.0, (Double(midi) - 69.0) / 12.0))
+            state.sequencerData.events[(pat * 64 + r) * kMaxChannels + ch] =
+                TrackerEvent(type: .noteOn, channel: UInt8(ch), instrument: 2, value1: f)
+        }
+        timeline?.publishSnapshot()
+        state.textureInvalidationTrigger += 1
+        state.showStatus("Bassline in \(noteName(genKey)) \(genScale.rawValue.lowercased())")
+    }
+
+    private func generateDrumPattern() {
+        state.snapshotForUndo(label: "Drum Pattern")
+        let pat = state.currentPattern
+        for i in 0..<64 {
+            let r = i % 16
+            let off = (pat * 64 + i) * kMaxChannels
+            // Style-specific patterns.
+            switch genStyle {
+            case .techno:
+                if r % 4 == 0 { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440) }
+                if r == 4 || r == 12 { state.sequencerData.events[off + 1] = TrackerEvent(type: .noteOn, channel: 1, instrument: 2, value1: 440) }
+                if r % 2 == 1 { state.sequencerData.events[off + 2] = TrackerEvent(type: .noteOn, channel: 2, instrument: 3, value1: 440) }
+            case .dnb:
+                if r == 0 || r == 10 { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440) }
+                if r == 4 || r == 12 { state.sequencerData.events[off + 1] = TrackerEvent(type: .noteOn, channel: 1, instrument: 2, value1: 440) }
+            case .ambient:
+                if r % 8 == 0 { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 220) }
+            case .hiphop:
+                if r == 0 || r == 8 { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440) }
+                if r == 4 || r == 12 { state.sequencerData.events[off + 1] = TrackerEvent(type: .noteOn, channel: 1, instrument: 2, value1: 440) }
+                if r % 2 == 1 && Bool.random() { state.sequencerData.events[off + 2] = TrackerEvent(type: .noteOn, channel: 2, instrument: 3, value1: 440) }
+            case .jazz:
+                if [0, 5, 10].contains(r) { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440) }
+                if r == 4 || r == 12 { state.sequencerData.events[off + 1] = TrackerEvent(type: .noteOn, channel: 1, instrument: 2, value1: 440) }
+            case .breakbeat:
+                if [0, 6, 10].contains(r) { state.sequencerData.events[off + 0] = TrackerEvent(type: .noteOn, channel: 0, instrument: 1, value1: 440) }
+                if r == 4 || r == 12 { state.sequencerData.events[off + 1] = TrackerEvent(type: .noteOn, channel: 1, instrument: 2, value1: 440) }
+            }
+        }
+        timeline?.publishSnapshot()
+        state.textureInvalidationTrigger += 1
+        state.showStatus("\(genStyle.rawValue) drum pattern")
+    }
+
+    private func generateChordProgression() {
+        state.snapshotForUndo(label: "Chord Progression")
+        let pat = state.currentPattern
+        // I–V–vi–IV in the chosen scale (degrees 0, 4, 5, 3).
+        let degrees = [0, 4, 5, 3]
+        let scaleSteps = genScale.intervalsFromRoot
+        let rootMidi = 60 + genKey
+        for chordIdx in 0..<4 {
+            let beatStart = chordIdx * 16
+            let degree = degrees[chordIdx]
+            let chordRoot = rootMidi + scaleSteps[degree % scaleSteps.count]
+            let chord = [chordRoot, chordRoot + 4, chordRoot + 7]    // major triad
+            for (offset, midi) in chord.enumerated() {
+                let off = (pat * 64 + beatStart) * kMaxChannels + offset + 4
+                let f = Float(440.0 * pow(2.0, (Double(midi) - 69.0) / 12.0))
+                state.sequencerData.events[off] =
+                    TrackerEvent(type: .noteOn, channel: UInt8(offset + 4), instrument: 1, value1: f)
+            }
+        }
+        timeline?.publishSnapshot()
+        state.textureInvalidationTrigger += 1
+        state.showStatus("I–V–vi–IV in \(noteName(genKey)) \(genScale.rawValue.lowercased())")
+    }
+
+    private func generateVariation() {
+        state.snapshotForUndo(label: "Variation")
+        let pat = state.currentPattern
+        let amount = Float(genIntensity)
+        for r in 0..<64 {
+            for ch in 0..<kMaxChannels {
+                let off = (pat * 64 + r) * kMaxChannels + ch
+                let ev = state.sequencerData.events[off]
+                if ev.type == .noteOn, Float.random(in: 0..<1) < amount * 0.4 {
+                    let detune: Float = [0.95, 1.05, 1.122, 0.891].randomElement()!
+                    state.sequencerData.events[off].value1 = ev.value1 * detune
+                }
+            }
+        }
+        timeline?.publishSnapshot()
+        state.textureInvalidationTrigger += 1
+        state.showStatus("Variation @ \(Int(genIntensity * 100))% intensity")
+    }
+
+    private func noteName(_ k: Int) -> String {
+        ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"][k % 12]
+    }
+}
+
+// MARK: - Generative style + scale enums
+
+public enum GenerativeStyle: String, CaseIterable, Sendable {
+    case techno    = "Techno"
+    case dnb       = "Drum & Bass"
+    case ambient   = "Ambient"
+    case hiphop    = "Hip-Hop"
+    case jazz      = "Jazz"
+    case breakbeat = "Breakbeat"
+}
+
+public enum ScaleKind: String, CaseIterable, Sendable {
+    case major      = "Major"
+    case minor      = "Minor"
+    case dorian     = "Dorian"
+    case phrygian   = "Phrygian"
+    case lydian     = "Lydian"
+    case mixolydian = "Mixolydian"
+    case pentatonic = "Pentatonic"
+    case blues      = "Blues"
+
+    /// Semitone offsets from the root for the first octave.
+    public var intervalsFromRoot: [Int] {
+        switch self {
+        case .major:      return [0, 2, 4, 5, 7, 9, 11]
+        case .minor:      return [0, 2, 3, 5, 7, 8, 10]
+        case .dorian:     return [0, 2, 3, 5, 7, 9, 10]
+        case .phrygian:   return [0, 1, 3, 5, 7, 8, 10]
+        case .lydian:     return [0, 2, 4, 6, 7, 9, 11]
+        case .mixolydian: return [0, 2, 4, 5, 7, 9, 10]
+        case .pentatonic: return [0, 2, 4, 7, 9]
+        case .blues:      return [0, 3, 5, 6, 7, 10]
+        }
+    }
 }
 
 // VideoSyncView moved to Sources/ToooT_UI/VideoSync.swift (proper AVPlayer model +

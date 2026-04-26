@@ -43,11 +43,20 @@ public struct MarkovGenerator: Sendable {
 
 // MARK: - Synthesis Tiers
 
-/// The three synthesis identity tiers — do not normalize or homogenize their character.
+/// The three synthesis flavors. Each describes a distinct character; do not
+/// homogenize them. Names are deliberately musical rather than themed —
+/// users see these in the workbench and need to know what they get.
 public enum SynthesisTier: String, CaseIterable, Sendable {
-    case carbon     = "Carbon"      // electromagnetic interference, shorted logic, data corruption
-    case biological = "Biological"  // vocal fry, throat resonances, cardiac arrhythmia
-    case xenomorph  = "Xenomorph"   // fractal noise, cellular automata, Void Screech / Quantum Foam
+    /// Studio (was: "Carbon"). Clean, precise, tracker-classic. Default.
+    case studio     = "Studio"
+    /// Organic (was: "Biological"). Humanized timing + natural vibrato +
+    /// breath/throat resonances. Use for ballads, lo-fi, anything that
+    /// should feel hand-played.
+    case organic    = "Organic"
+    /// Generative (was: "Xenomorph"). Stochastic / glitchy / experimental.
+    /// Fractal noise, cellular automata, controlled chaos. Use for
+    /// IDM, ambient, sound design.
+    case generative = "Generative"
 }
 
 // MARK: - Markov Transition Matrix (vDSP-backed, AMX-dispatched)

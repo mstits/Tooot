@@ -64,14 +64,23 @@ public final class PlaybackState: @unchecked Sendable {
     public var masterEQBandsDB: [Float] = Array(repeating: 0, count: 10)
     public var isMetronomeEnabled: Bool = false; public var isMasterLimiterEnabled: Bool = true
     public var sidechainChannel: Int = -1; public var sidechainAmount: Float = 0.0
-    public var bpm: Int = 125; public var ticksPerRow: Int = 6; public var activeTier: SynthesisTier = .carbon
-    
-    public var carbonCorruption: Float = 0.0
-    public var carbonGlitchRate: Float = 0.0
-    public var bioArrhythmiaRate: Float = 0.0
-    public var bioBreathiness: Float = 0.0
-    public var xenoFractalDim: Float = 1.0
-    public var xenoVoidThreshold: Float = 0.5
+    public var bpm: Int = 125; public var ticksPerRow: Int = 6; public var activeTier: SynthesisTier = .studio
+
+    /// Studio tier — clean / classic. Two knobs:
+    ///   • corruption: 0 = pristine, 1 = signal noise / data drops
+    ///   • glitchRate: 0 = stable, 1 = frequent random retriggers
+    public var studioCorruption: Float = 0.0
+    public var studioGlitchRate: Float = 0.0
+    /// Organic tier — humanized.
+    ///   • timingDrift: micro-timing variance per voice
+    ///   • breathiness: throat-resonance amount on sustained notes
+    public var organicTimingDrift: Float = 0.0
+    public var organicBreathiness: Float = 0.0
+    /// Generative tier — experimental.
+    ///   • fractalDim: 1 = octave doubling, 2 = chaotic
+    ///   • voidThreshold: probability of unexpected silence / artifacts
+    public var generativeFractalDim: Float = 1.0
+    public var generativeVoidThreshold: Float = 0.5
     
     public var channelVolumes: [Float] { (0..<kMaxChannels).map { channelVolumesPtr[$0] } }
     
