@@ -171,11 +171,13 @@ struct TransportView: View {
                     .foregroundColor(state.isPlaying ? .orange : .green)
                     .frame(width: 24, height: 24)
             }.buttonStyle(.plain)
+                .help(state.isPlaying ? "Pause (Space)" : "Play (Space)")
 
             // Stop
             Button(action: { NotificationCenter.default.post(name: NSNotification.Name("TransportStop"), object: nil) }) {
                 Image(systemName: "stop.fill").foregroundColor(.gray).frame(width: 24, height: 24)
             }.buttonStyle(.plain)
+                .help("Stop / panic (⌘.)")
 
             Divider().frame(height: 16)
 
@@ -189,6 +191,7 @@ struct TransportView: View {
                 Stepper("", value: Binding(get: { state.bpm }, set: { timeline?.setBPM($0) }), in: 32...255, step: 1)
                     .labelsHidden()
             }
+            .help("Beats per minute (32–255). Tempo automation can override this during playback.")
 
             // TPR stepper
             HStack(spacing: 4) {
@@ -200,6 +203,7 @@ struct TransportView: View {
                 Stepper("", value: Binding(get: { state.ticksPerRow }, set: { timeline?.setTicksPerRow($0) }), in: 1...32, step: 1)
                     .labelsHidden()
             }
+            .help("Ticks per row — sub-row resolution for tracker effects. Standard is 6.")
 
             Divider().frame(height: 16)
 

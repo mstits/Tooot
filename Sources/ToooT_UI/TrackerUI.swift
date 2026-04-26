@@ -258,50 +258,102 @@ struct HUDOverlay: View {
     var body: some View {
         VStack {
             if let msg = state.statusMessage {
-                Text(msg)
-                    .font(.system(size: 10, weight: .black, design: .monospaced))
-                    .padding(.horizontal, 16).padding(.vertical, 8)
-                    .background(Color.black.opacity(0.8))
-                    .foregroundColor(.green)
-                    .cornerRadius(6)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.green.opacity(0.5), lineWidth: 1))
-                    .padding(.top, 60)
+                HStack(spacing: 8) {
+                    Image(systemName: "info.circle.fill")
+                        .foregroundStyle(StudioTheme.gradient)
+                    Text(msg)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.white)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(StudioTheme.accent.opacity(0.4), lineWidth: 1))
+                .padding(.top, 60)
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
             Spacer()
         }
+        .animation(.easeInOut(duration: 0.18), value: state.statusMessage)
     }
 }
 
 struct WelcomeOverlay: View {
+    @Environment(\.openURL) private var openURL
+
+    private func quickTip(key: String, text: String) -> some View {
+        HStack(spacing: 12) {
+            Text(key)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.85))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .background(Color.white.opacity(0.10))
+                .cornerRadius(4)
+                .frame(minWidth: 60, alignment: .leading)
+            Text(text).font(.system(size: 11)).foregroundColor(.white.opacity(0.75))
+            Spacer()
+        }
+    }
+
     var body: some View {
         ZStack {
             StudioTheme.surface.opacity(0.95).ignoresSafeArea()
-            VStack(spacing: 30) {
-                Image(systemName: "music.quarternote.3").font(.system(size: 80)).foregroundStyle(StudioTheme.gradient)
-                Text("PROJECT ToooT").font(.system(size: 40, weight: .black, design: .monospaced)).foregroundStyle(StudioTheme.gradient)
-                Text("Mac Tracker for the Post-Human Era").font(.system(size: 14, weight: .bold, design: .monospaced)).foregroundColor(.gray)
-                
-                HStack(spacing: 20) {
-                    WelcomeButton(label: "NEW PROJECT", systemImage: "plus.square.fill", color: .blue) { NotificationCenter.default.post(name: NSNotification.Name("NewTrackerDocument"), object: nil) }
-                    WelcomeButton(label: "LOAD MOD/MAD/XM", systemImage: "folder.fill", color: .green) { 
+            VStack(spacing: 26) {
+                Image(systemName: "waveform.path.ecg")
+                    .font(.system(size: 72))
+                    .foregroundStyle(StudioTheme.gradient)
+                Text("ToooT")
+                    .font(.system(size: 56, weight: .black, design: .monospaced))
+                    .foregroundStyle(StudioTheme.gradient)
+                Text("Open-source macOS DAW · tracker, arrangement, session")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 14) {
+                    WelcomeButton(label: "NEW PROJECT",
+                                  systemImage: "plus.square.fill",
+                                  color: .blue) {
+                        NotificationCenter.default.post(name: NSNotification.Name("NewTrackerDocument"), object: nil)
+                    }
+                    WelcomeButton(label: "OPEN PROJECT",
+                                  systemImage: "folder.fill",
+                                  color: .green) {
                         let p = NSOpenPanel()
                         p.allowedContentTypes = [
-                            UTType(filenameExtension: "mod")!,
                             UTType(filenameExtension: "mad")!,
                             UTType(filenameExtension: "madk")!,
                             UTType(filenameExtension: "madg")!,
+                            UTType(filenameExtension: "mod")!,
                             UTType(filenameExtension: "xm")!,
                             UTType(filenameExtension: "it")!,
                             UTType(filenameExtension: "s3m")!
                         ]
-                        if p.runModal() == .OK, let url = p.url { NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url) } 
+                        if p.runModal() == .OK, let url = p.url {
+                            NotificationCenter.default.post(name: NSNotification.Name("LoadModFileURL"), object: url)
+                        }
                     }
                 }
-                
-                Button(action: { NotificationCenter.default.post(name: NSNotification.Name("NewTrackerDocument"), object: nil) }) {
-                    Label("START AUDIO ENGINE", systemImage: "power").font(.system(size: 10, weight: .black)).padding(10)
-                }.buttonStyle(.borderedProminent).tint(.orange)
+
+                // Quick tips — surfaced so first-time users learn the major
+                // navigation moves without hunting through menus.
+                VStack(alignment: .leading, spacing: 6) {
+                    quickTip(key: "⌘N",      text: "New project")
+                    quickTip(key: "⌘O",      text: "Open .mad / .mod / .xm / .it / .s3m")
+                    quickTip(key: "⌘K",      text: "Command palette — every action, fuzzy-find")
+                    quickTip(key: "Space",   text: "Play / pause")
+                    quickTip(key: "⌘.",      text: "Stop · MIDI panic")
+                    quickTip(key: "⌘Z / ⌘⇧Z", text: "Undo / redo (50-step history)")
+                }
+                .padding(.horizontal, 18).padding(.vertical, 14)
+                .background(Color.black.opacity(0.4))
+                .cornerRadius(10)
+
+                Text("Drag a `.mad` / `.mod` / `.xm` / `.it` file anywhere in the workbench to load it.")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 460)
             }
+            .padding(40)
         }
     }
 }

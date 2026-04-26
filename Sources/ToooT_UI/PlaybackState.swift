@@ -294,7 +294,18 @@ public final class PlaybackState: @unchecked Sendable {
         if type == 0 { volEnvEnabledPtr[instrument] = val } else if type == 1 { panEnvEnabledPtr[instrument] = val } else { pitchEnvEnabledPtr[instrument] = val }
         mixerGeneration += 1
     }
-    public func showStatus(_ message: String) { statusMessage = message; Task { try? await Task.sleep(nanoseconds: 3_000_000_000); if statusMessage == message { statusMessage = nil } } }
+    /// Displays `message` in the HUD overlay for ~5 s. Long enough for users to
+    /// actually read; short enough that stale state doesn't linger across
+    /// distinct actions. The message clears itself only if it hasn't been
+    /// replaced by a newer status, so rapid-fire status calls don't truncate
+    /// each other.
+    public func showStatus(_ message: String) {
+        statusMessage = message
+        Task {
+            try? await Task.sleep(nanoseconds: 5_000_000_000)
+            if statusMessage == message { statusMessage = nil }
+        }
+    }
 }
 
 public enum WorkbenchTab: String, CaseIterable, Identifiable {
