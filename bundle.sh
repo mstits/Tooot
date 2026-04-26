@@ -2,11 +2,22 @@
 set -e
 
 APP_NAME="ToooT.app"
-EXECUTABLE=".build/arm64-apple-macosx/debug/ProjectToooTApp"
+APP_VERSION="2.0.1"
+# By default we ship the release build; pass DEBUG=1 to bundle the debug
+# binary for local smoke-testing.
+if [ -n "$DEBUG" ]; then
+    EXECUTABLE=".build/arm64-apple-macosx/debug/ProjectToooTApp"
+else
+    EXECUTABLE=".build/arm64-apple-macosx/release/ProjectToooTApp"
+fi
 
 if [ ! -f "$EXECUTABLE" ]; then
-    echo "Executable not found. Building..."
-    swift build
+    echo "Executable not found at $EXECUTABLE. Building..."
+    if [ -n "$DEBUG" ]; then
+        swift build
+    else
+        swift build -c release
+    fi
 fi
 
 echo "Creating bundle structure..."
@@ -31,7 +42,7 @@ cat << PLIST > "$APP_NAME/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>2.0.0</string>
+    <string>$APP_VERSION</string>
     <key>LSMinimumSystemVersion</key>
     <string>14.0</string>
     <key>NSHighResolutionCapable</key>

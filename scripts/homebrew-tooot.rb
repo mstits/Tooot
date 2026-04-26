@@ -13,8 +13,8 @@
 #
 
 cask "tooot" do
-  version "2.0.0"
-  sha256 "d39803234fa6688e9e9f995c38af98d5636dc6fabcbcbce3387d6db2d6cad868"
+  version "2.0.1"
+  sha256 "11b851bcb557f3b49aab22e70175f822fdc1337cff978c85658b1adab4bdb3d2"
 
   url "https://github.com/mstits/Tooot/releases/download/v#{version}/ToooT-#{version}.dmg"
   name "ToooT"

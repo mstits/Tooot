@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.1] — 2026-04-26
+
 ### Added
 - **Spatial Audio editor — proper top-down view** — replaces the previous
   Metal mesh-shader pipeline (which silently failed on base M1 hardware
@@ -271,5 +273,6 @@ brew install --cask tooot
 Or download the DMG and drag to Applications. macOS 14+, Apple
 Silicon.
 
-[Unreleased]: https://github.com/mstits/Tooot/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/mstits/Tooot/compare/v2.0.1...HEAD
+[2.0.1]: https://github.com/mstits/Tooot/releases/tag/v2.0.1
 [2.0.0]: https://github.com/mstits/Tooot/releases/tag/v2.0.0
