@@ -34,6 +34,7 @@ private final class RenderBlockWrapper: @unchecked Sendable {
     let engineBlock:    AUInternalRenderBlock
     let stereoWideBlock: AUInternalRenderBlock?
     let reverbBlock:    AUInternalRenderBlock?
+    let masterEQBlock:   AUInternalRenderBlock?
     let statePtr:       UnsafeMutablePointer<EngineSharedState>
     let renderResources: RenderResources  // access to bus buffers + bus volumes
 
@@ -55,11 +56,13 @@ private final class RenderBlockWrapper: @unchecked Sendable {
     init(engineBlock:    @escaping AUInternalRenderBlock,
          stereoWideBlock: AUInternalRenderBlock?,
          reverbBlock:    AUInternalRenderBlock?,
+         masterEQBlock:   AUInternalRenderBlock?,
          statePtr:       UnsafeMutablePointer<EngineSharedState>,
          renderResources: RenderResources) {
         self.engineBlock     = engineBlock
         self.stereoWideBlock = stereoWideBlock
         self.reverbBlock     = reverbBlock
+        self.masterEQBlock   = masterEQBlock
         self.statePtr        = statePtr
         self.renderResources = renderResources
 
@@ -167,7 +170,12 @@ private func coreAudioRenderCallback(
         }
     }
 
-    // 4. Internal vDSP effects (stereo widening, reverb)
+    // 4. Internal vDSP effects.
+    //    Order matters: EQ first (clean tonal shaping before any spatial /
+    //    reverb processing), then stereo widening, then reverb tail.
+    if wrapper.statePtr.pointee.isMasterEQEnabled != 0, let eq = wrapper.masterEQBlock {
+        _ = eq(ioActionFlags, inTimeStamp, inNumberFrames, 0, ioData, nil, nil)
+    }
     if wrapper.statePtr.pointee.isStereoWideEnabled != 0, let sw = wrapper.stereoWideBlock {
         _ = sw(ioActionFlags, inTimeStamp, inNumberFrames, 0, ioData, nil, nil)
     }
@@ -196,6 +204,7 @@ public final class AudioHost {
     // AudioUnit C struct is freed when the AUAudioUnit Swift wrapper deallocates).
     private var stereoWideAU: AUAudioUnit?
     private var reverbAU: AUAudioUnit?
+    private var masterEQAU: LinearPhaseEQ?
     // Keep AUv3 insert plugins alive. Key is "channelIndex_pluginIndex" or similar.
     private var insertPlugins: [String: AUAudioUnit] = [:]
     // Keep VST3 plugins alive. Key is "channelIndex_vst3".
@@ -277,6 +286,9 @@ public final class AudioHost {
         let rv = try? ReverbPlugin(componentDescription: cd, options: [])
         try? rv?.allocateRenderResources()
         self.reverbAU = rv
+        let eq = try? LinearPhaseEQ(componentDescription: cd, options: [])
+        try? eq?.allocateRenderResources()
+        self.masterEQAU = eq
         os_signpost(.end, log: Self.launchLog, name: "InternalDSPBoot", signpostID: dspID)
 
         // AudioRenderNode — the Swift 6 mixing core. We use the instance
@@ -318,6 +330,7 @@ public final class AudioHost {
             engineBlock:     node.renderBlock,
             stereoWideBlock: sw?.internalRenderBlock,
             reverbBlock:     rv?.internalRenderBlock,
+            masterEQBlock:   eq?.internalRenderBlock,
             statePtr:        au.sharedStatePtr,
             renderResources: node.resources)
         self.renderBlockWrapper = wrapper
@@ -723,6 +736,13 @@ public final class AudioHost {
     /// Hard-stops transport, kills every active voice, and sends CC 123 (All Notes Off) +
     /// CC 120 (All Sound Off) on every MIDI channel. Standard "panic button" behaviour —
     /// use when a stuck note won't release or an external synth is screaming.
+    /// Sets one band of the master linear-phase EQ. `band` is 0-9 (31 Hz to
+    /// 16 kHz, log-spaced); `dB` is the gain in decibels (0 = flat).
+    /// The kernel is rebuilt lazily on the next render block.
+    public func setMasterEQBand(_ band: Int, dB: Float) {
+        masterEQAU?.setBandGain(dB, band: band)
+    }
+
     public func midiPanic(state: PlaybackState) {
         state.isPlaying = false
         trackerAU?.sharedStatePtr.pointee.isPlaying = 0

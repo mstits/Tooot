@@ -1301,6 +1301,73 @@ autoreleasepool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 56. Linear-phase EQ — kernel build + render-block contract
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 56. Linear-Phase EQ Activation ──────────────────────────────────")
+autoreleasepool {
+    let cd = AudioComponentDescription(
+        componentType: kAudioUnitType_Effect, componentSubType: 0x4C504551,
+        componentManufacturer: 0x4170706c, componentFlags: 0, componentFlagsMask: 0)
+    guard let eq = try? LinearPhaseEQ(componentDescription: cd, options: []) else {
+        assert(false, "LinearPhaseEQ instantiates without crashing")
+        return
+    }
+    try? eq.allocateRenderResources()
+
+    // Default state: flat → unity gain → output ≈ input across the band.
+    let frames = 1024
+    let abl = AudioBufferList.allocate(maximumBuffers: 2)
+    defer { free(abl.unsafeMutablePointer) }
+    let bufL = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    let bufR = UnsafeMutablePointer<Float>.allocate(capacity: frames)
+    defer { bufL.deallocate(); bufR.deallocate() }
+    // 1 kHz sine input — frequency well inside the EQ pass-band.
+    let sr: Float = 44100
+    for i in 0..<frames {
+        let v = sinf(2 * Float.pi * 1000 * Float(i) / sr) * 0.5
+        bufL[i] = v; bufR[i] = v
+    }
+    abl[0] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * 4),
+                         mData: UnsafeMutableRawPointer(bufL))
+    abl[1] = AudioBuffer(mNumberChannels: 1, mDataByteSize: UInt32(frames * 4),
+                         mData: UnsafeMutableRawPointer(bufR))
+
+    var ts = AudioTimeStamp(); var flags = AudioUnitRenderActionFlags()
+    let block = eq.internalRenderBlock
+    _ = block(&flags, &ts, AUAudioFrameCount(frames), 0, abl.unsafeMutablePointer, nil, nil)
+
+    // With flat EQ the convolution should leave the steady-state portion close
+    // to the input. We measure RMS of the latter half (skips the first
+    // overlap-save block where history is zero — pre-ring is expected).
+    var inSumSq: Float = 0, outSumSq: Float = 0
+    for i in 512..<frames {
+        let v = sinf(2 * Float.pi * 1000 * Float(i) / sr) * 0.5
+        inSumSq += v * v
+        outSumSq += bufL[i] * bufL[i]
+    }
+    let inRMS  = sqrtf(inSumSq / 512)
+    let outRMS = sqrtf(outSumSq / 512)
+    let ratio = outRMS / inRMS
+    assert(ratio > 0.5 && ratio < 1.6,
+           "Flat-EQ steady-state passes signal at ~unity gain (ratio=\(ratio))")
+
+    // Push +12 dB on the 1 kHz band (5) and verify steady-state energy increases.
+    eq.setBandGain(12, band: 5)
+    // Reset input.
+    for i in 0..<frames {
+        let v = sinf(2 * Float.pi * 1000 * Float(i) / sr) * 0.5
+        bufL[i] = v; bufR[i] = v
+    }
+    _ = block(&flags, &ts, AUAudioFrameCount(frames), 0, abl.unsafeMutablePointer, nil, nil)
+    var boostedSumSq: Float = 0
+    for i in 512..<frames { boostedSumSq += bufL[i] * bufL[i] }
+    let boostedRMS = sqrtf(boostedSumSq / 512)
+    assert(boostedRMS > inRMS * 1.5,
+           "+12 dB on 1 kHz band raises steady-state RMS (boosted=\(boostedRMS) vs flat=\(outRMS))")
+    print("  flat ratio: \(ratio), +12 dB ratio: \(boostedRMS / inRMS)")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 55. Automation snapshot — concurrent swap + lifetime
 // ─────────────────────────────────────────────────────────────────────────────
 // Stress-tests the atomic-swap + deallocation-queue lifecycle.

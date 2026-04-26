@@ -48,7 +48,9 @@ public final class PlaybackState: @unchecked Sendable {
     public var peakLevel: Float = 0.0; public var activeVoices: Int = 0; public var algSeed: UInt32 = 0
     public var isRecording: Bool = false; public var recordedSamplesL: [Float] = []; public var recordedSamplesR: [Float] = []
     
-    public var masterVolume: Double = 0.8; public var isStereoWideEnabled: Bool = false; public var isReverbEnabled: Bool = false
+    public var masterVolume: Double = 0.8; public var isStereoWideEnabled: Bool = false; public var isReverbEnabled: Bool = false; public var isMasterEQEnabled: Bool = false
+    /// 10 master-EQ band gains in dB (0 = flat). Bands: 31/62/125/250/500/1k/2k/4k/8k/16k Hz.
+    public var masterEQBandsDB: [Float] = Array(repeating: 0, count: 10)
     public var isMetronomeEnabled: Bool = false; public var isMasterLimiterEnabled: Bool = true
     public var sidechainChannel: Int = -1; public var sidechainAmount: Float = 0.0
     public var bpm: Int = 125; public var ticksPerRow: Int = 6; public var activeTier: SynthesisTier = .carbon
