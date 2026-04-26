@@ -525,15 +525,417 @@ public struct SampleEditorView: View {
 }
 
 public struct AutomationView: View {
-    @Bindable var state: PlaybackState; @State private var selectedParam = "Volume"
+    @Bindable var state: PlaybackState
+    @State private var selectedParam: String = "ch.0.volume"
+    @State private var selectedPoint: BezierAutomationPoint.ID?
+    @State private var didDrag: Bool = false
+
     public init(state: PlaybackState) { self.state = state }
+
+    /// All automation targets the user can edit. Native engine targets up
+    /// front; per-channel/per-bus repeated. Plugin params get appended at
+    /// runtime when a host registers them.
+    private var availableParams: [(label: String, id: String)] {
+        var out: [(String, String)] = [
+            ("Master Volume", "master.volume"),
+            ("Tempo (BPM)",   "tempo.bpm"),
+        ]
+        for ch in 0..<8 {
+            out.append(("Ch \(ch + 1) Volume", "ch.\(ch).volume"))
+            out.append(("Ch \(ch + 1) Pan",    "ch.\(ch).pan"))
+        }
+        for b in 0..<kAuxBusCount {
+            out.append(("Bus \(b + 1) Volume", "bus.\(b).volume"))
+        }
+        return out
+    }
+
     public var body: some View {
-        VStack(spacing: 12) {
-            HStack { Text("AUTOMATION").font(.system(size: 11, weight: .black, design: .monospaced)).foregroundStyle(StudioTheme.gradient); Spacer(); Picker("", selection: $selectedParam) { Text("Volume").tag("Volume"); Text("Panning").tag("Panning") }.pickerStyle(.segmented).frame(width: 150) }.padding(.horizontal)
-            GeometryReader { geo in ZStack { RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.4)); Canvas { context, size in let ch = state.selectedChannel; guard let lanes = state.automationLanes[ch], let lane = lanes.first(where: { $0.parameter == selectedParam }) else { return }; var path = Path(); for i in 0..<lane.points.count { let pt = lane.points[i]; let p = CGPoint(x: pt.time * size.width, y: (1.0 - pt.value) * size.height); if i == 0 { path.move(to: p) } else { let prev = lane.points[i-1]; let prevP = CGPoint(x: prev.time * size.width, y: (1.0 - prev.value) * size.height); let cp = CGPoint(x: prevP.x + (p.x - prevP.x) * 0.5 + prev.controlPoint.x, y: prevP.y + (p.y - prevP.y) * 0.5 + prev.controlPoint.y); path.addQuadCurve(to: p, control: cp) } }; context.stroke(path, with: .color(StudioTheme.accent), lineWidth: 2); for pt in lane.points { let p = CGPoint(x: pt.time * size.width, y: (1.0 - pt.value) * size.height); context.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)), with: .color(StudioTheme.accent)) } }.gesture(DragGesture(minimumDistance: 0).onChanged { v in let ch = state.selectedChannel; guard let lanes = state.automationLanes[ch], let lIdx = lanes.firstIndex(where: { $0.parameter == selectedParam }) else { return }; if let idx = state.draggedPointIndex { var pts = lanes[lIdx].points; if NSEvent.modifierFlags.contains(.option) { pts[idx].controlPoint.y = Double(v.translation.height) } else { pts[idx].time = Double(v.location.x / geo.size.width).clamped(to: 0...1.0); pts[idx].value = Double(1.0 - v.location.y / geo.size.height).clamped(to: 0...1.0) }; state.automationLanes[ch]?[lIdx].points = pts.sorted { $0.time < $1.time } } else { for (idx, pt) in lanes[lIdx].points.enumerated() { let p = CGPoint(x: pt.time * geo.size.width, y: (1.0 - pt.value) * geo.size.height); if sqrt(pow(p.x - v.startLocation.x, 2) + pow(p.y - v.startLocation.y, 2)) < 12 { state.draggedPointIndex = idx; break } } } }.onEnded { v in if state.draggedPointIndex == nil { addPoint(at: v.location, in: geo.size) }; state.draggedPointIndex = nil }) } }.frame(maxHeight: .infinity).padding(.horizontal).padding(.bottom)
+        HStack(spacing: 0) {
+            paramSidebar
+                .frame(width: 200)
+                .background(Color.black.opacity(0.35))
+
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                editor
+                pointInspector
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
     }
-    private func addPoint(at location: CGPoint, in size: CGSize) { let ch = state.selectedChannel; if state.automationLanes[ch] == nil { state.automationLanes[ch] = [] }; let t = Double(location.x / size.width).clamped(to: 0...1.0); let v = Double(1.0 - location.y / size.height).clamped(to: 0...1.0); if let idx = state.automationLanes[ch]?.firstIndex(where: { $0.parameter == selectedParam }) { state.automationLanes[ch]?[idx].points.append(BezierAutomationPoint(time: t, value: v)); state.automationLanes[ch]?[idx].points.sort { $0.time < $1.time } } else { state.automationLanes[ch]?.append(BezierAutomationLane(parameter: selectedParam, points: [BezierAutomationPoint(time: t, value: v)])) } }
+
+    // MARK: - Sidebar
+
+    private var paramSidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("PARAMETERS")
+                .font(.system(size: 9, weight: .black, design: .monospaced))
+                .foregroundStyle(StudioTheme.gradient)
+                .padding(.horizontal, 12).padding(.top, 14).padding(.bottom, 8)
+
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(availableParams, id: \.id) { item in
+                        paramRow(label: item.label, id: item.id)
+                    }
+                }
+                .padding(.horizontal, 6)
+            }
+        }
+    }
+
+    private func paramRow(label: String, id: String) -> some View {
+        let lane = currentLane(targetID: id, channel: 0)
+        let isSelected = selectedParam == id
+        return HStack {
+            Circle()
+                .fill(lane != nil ? StudioTheme.accent : Color.gray.opacity(0.3))
+                .frame(width: 6, height: 6)
+            Text(label).font(.system(size: 11))
+            Spacer()
+            if let l = lane {
+                Text("\(l.points.count)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(isSelected ? StudioTheme.accent.opacity(0.18) : Color.clear)
+        .cornerRadius(4)
+        .contentShape(Rectangle())
+        .onTapGesture { selectedParam = id; selectedPoint = nil }
+    }
+
+    // MARK: - Header
+
+    private var header: some View {
+        HStack {
+            Text("AUTOMATION")
+                .font(.system(size: 11, weight: .black, design: .monospaced))
+                .foregroundStyle(StudioTheme.gradient)
+            Text("·").foregroundColor(.secondary)
+            Text(currentParamLabel)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.white.opacity(0.85))
+            Spacer()
+            HStack(spacing: 8) {
+                Button("Clear")  { clearLane() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(currentLane(targetID: selectedParam, channel: 0) == nil)
+                Button("+ Point") { addPointAtMidpoint() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private var currentParamLabel: String {
+        availableParams.first(where: { $0.id == selectedParam })?.label ?? selectedParam
+    }
+
+    // MARK: - Editor canvas
+
+    private var editor: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.black.opacity(0.4))
+
+                Canvas { ctx, size in
+                    drawGrid(ctx: ctx, size: size)
+                    drawCurrentLane(ctx: ctx, size: size)
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1, coordinateSpace: .local)
+                        .onChanged { v in handleDragChanged(v: v, size: geo.size) }
+                        .onEnded   { v in handleDragEnded(v: v, size: geo.size) }
+                )
+                .help("Click to insert a point. Drag a point to move it. Use the inspector to change curve type.")
+
+                // Edge labels.
+                edgeLabels(size: geo.size)
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func edgeLabels(size: CGSize) -> some View {
+        VStack {
+            HStack {
+                Text("max").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4))
+                Spacer()
+                Text("end").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4))
+            }
+            Spacer()
+            HStack {
+                Text("min").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4))
+                Spacer()
+                Text("start").font(.system(size: 9, design: .monospaced)).foregroundColor(.white.opacity(0.4))
+            }
+        }
+        .padding(8)
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .allowsHitTesting(false)
+    }
+
+    private func drawGrid(ctx: GraphicsContext, size: CGSize) {
+        // Time gridlines: 16 vertical lines (every 1/16 of song length).
+        for i in 1..<16 {
+            let x = size.width * CGFloat(i) / 16
+            var p = Path()
+            p.move(to: CGPoint(x: x, y: 0)); p.addLine(to: CGPoint(x: x, y: size.height))
+            ctx.stroke(p, with: .color(.white.opacity(i % 4 == 0 ? 0.10 : 0.04)), lineWidth: 1)
+        }
+        // Value gridlines: at 0.25, 0.5, 0.75.
+        for v in [0.25, 0.5, 0.75] {
+            let y = size.height * CGFloat(v)
+            var p = Path()
+            p.move(to: CGPoint(x: 0, y: y)); p.addLine(to: CGPoint(x: size.width, y: y))
+            ctx.stroke(p, with: .color(.white.opacity(v == 0.5 ? 0.10 : 0.05)), lineWidth: 1)
+        }
+        // 50%-line label
+        ctx.draw(Text("50%").font(.system(size: 9, design: .monospaced))
+            .foregroundColor(.white.opacity(0.3)),
+                 at: CGPoint(x: 22, y: size.height / 2))
+    }
+
+    private func drawCurrentLane(ctx: GraphicsContext, size: CGSize) {
+        guard let lane = currentLane(targetID: selectedParam, channel: 0),
+              !lane.points.isEmpty else {
+            // Empty state hint.
+            ctx.draw(Text("click anywhere to add a point")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.35)),
+                     at: CGPoint(x: size.width / 2, y: size.height / 2))
+            return
+        }
+
+        // Curve.
+        var path = Path()
+        for (i, pt) in lane.points.enumerated() {
+            let p = CGPoint(x: CGFloat(pt.time) * size.width,
+                            y: CGFloat(1.0 - pt.value) * size.height)
+            if i == 0 {
+                path.move(to: p)
+            } else {
+                let prev = lane.points[i - 1]
+                let prevP = CGPoint(x: CGFloat(prev.time) * size.width,
+                                    y: CGFloat(1.0 - prev.value) * size.height)
+                let cp = CGPoint(
+                    x: prevP.x + (p.x - prevP.x) * 0.5 + prev.controlPoint.x,
+                    y: prevP.y + (p.y - prevP.y) * 0.5 + prev.controlPoint.y)
+                path.addQuadCurve(to: p, control: cp)
+            }
+        }
+        ctx.stroke(path, with: .color(StudioTheme.accent), lineWidth: 2)
+
+        // Filled area below.
+        var fill = path
+        if let last = lane.points.last, let first = lane.points.first {
+            fill.addLine(to: CGPoint(x: CGFloat(last.time) * size.width, y: size.height))
+            fill.addLine(to: CGPoint(x: CGFloat(first.time) * size.width, y: size.height))
+            fill.closeSubpath()
+            ctx.fill(fill, with: .color(StudioTheme.accent.opacity(0.15)))
+        }
+
+        // Points.
+        for pt in lane.points {
+            let p = CGPoint(x: CGFloat(pt.time) * size.width,
+                            y: CGFloat(1.0 - pt.value) * size.height)
+            let isSelected = selectedPoint == pt.id
+            let r: CGFloat = isSelected ? 7 : 5
+            let ring = Path(ellipseIn: CGRect(x: p.x - r - 2, y: p.y - r - 2,
+                                               width: (r + 2) * 2, height: (r + 2) * 2))
+            if isSelected {
+                ctx.stroke(ring, with: .color(.white.opacity(0.85)), lineWidth: 2)
+            }
+            let dot = Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2))
+            ctx.fill(dot, with: .color(StudioTheme.accent))
+            ctx.stroke(dot, with: .color(.white.opacity(0.7)), lineWidth: 1)
+        }
+    }
+
+    // MARK: - Point inspector
+
+    @ViewBuilder
+    private var pointInspector: some View {
+        if let pid = selectedPoint, let lane = currentLane(targetID: selectedParam, channel: 0),
+           let idx = lane.points.firstIndex(where: { $0.id == pid }) {
+            let pt = lane.points[idx]
+            HStack(spacing: 14) {
+                infoBadge("TIME",  String(format: "%.2f", pt.time))
+                infoBadge("VALUE", String(format: "%.0f%%", pt.value * 100))
+                infoBadge("INDEX", "\(idx + 1) / \(lane.points.count)")
+
+                Picker("Curve out", selection: Binding(
+                    get: { pt.controlPoint == .zero ? "linear" : "curve" },
+                    set: { newVal in
+                        applyToPoint { p in
+                            p.controlPoint = (newVal == "linear") ? .zero : CGPoint(x: 0, y: -20)
+                        }
+                    })) {
+                    Text("Linear").tag("linear")
+                    Text("S-Curve").tag("curve")
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 200)
+
+                Spacer()
+
+                Button("Delete Point") { deleteSelectedPoint() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .foregroundColor(.red)
+            }
+            .padding(10)
+            .background(Color.black.opacity(0.35))
+            .cornerRadius(8)
+        } else {
+            Text("Select a point to edit its curve · click empty space to insert")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+        }
+    }
+
+    private func infoBadge(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label).font(.system(size: 8, weight: .bold)).foregroundColor(.gray)
+            Text(value).font(.system(size: 11, weight: .semibold, design: .monospaced))
+        }
+    }
+
+    // MARK: - Lane access helpers
+
+    private func currentLane(targetID: String, channel: Int) -> BezierAutomationLane? {
+        // Lanes are stored under a channel key but the targetID is the
+        // canonical identifier. We bucket every lane under channel 0 in
+        // the current implementation; per-channel partitioning is the
+        // reader's concern.
+        for (_, lanes) in state.automationLanes {
+            if let l = lanes.first(where: { $0.parameter == targetID }) {
+                return l
+            }
+        }
+        return nil
+    }
+
+    private func laneIndex(targetID: String) -> (channel: Int, idx: Int)? {
+        for (ch, lanes) in state.automationLanes {
+            if let i = lanes.firstIndex(where: { $0.parameter == targetID }) {
+                return (ch, i)
+            }
+        }
+        return nil
+    }
+
+    // MARK: - Mutation
+
+    private func addPoint(at location: CGPoint, in size: CGSize) {
+        let t = Double(location.x / size.width).clamped(to: 0...1.0)
+        let v = Double(1.0 - location.y / size.height).clamped(to: 0...1.0)
+        let newPt = BezierAutomationPoint(time: t, value: v)
+
+        if let (ch, i) = laneIndex(targetID: selectedParam) {
+            state.automationLanes[ch]?[i].points.append(newPt)
+            state.automationLanes[ch]?[i].points.sort { $0.time < $1.time }
+        } else {
+            // Stash new lanes under channel 0 — render-path keys on
+            // targetID, not channel index.
+            var lane = BezierAutomationLane(parameter: selectedParam)
+            lane.points = [newPt]
+            state.automationLanes[0, default: []].append(lane)
+        }
+        selectedPoint = newPt.id
+    }
+
+    private func addPointAtMidpoint() {
+        let pt = BezierAutomationPoint(time: 0.5, value: 0.5)
+        if let (ch, i) = laneIndex(targetID: selectedParam) {
+            state.automationLanes[ch]?[i].points.append(pt)
+            state.automationLanes[ch]?[i].points.sort { $0.time < $1.time }
+        } else {
+            var lane = BezierAutomationLane(parameter: selectedParam)
+            lane.points = [pt]
+            state.automationLanes[0, default: []].append(lane)
+        }
+        selectedPoint = pt.id
+    }
+
+    private func clearLane() {
+        if let (ch, i) = laneIndex(targetID: selectedParam) {
+            state.automationLanes[ch]?.remove(at: i)
+        }
+        selectedPoint = nil
+    }
+
+    private func deleteSelectedPoint() {
+        guard let pid = selectedPoint, let (ch, i) = laneIndex(targetID: selectedParam) else { return }
+        state.automationLanes[ch]?[i].points.removeAll { $0.id == pid }
+        if state.automationLanes[ch]?[i].points.isEmpty == true {
+            state.automationLanes[ch]?.remove(at: i)
+        }
+        selectedPoint = nil
+    }
+
+    private func applyToPoint(_ mutate: (inout BezierAutomationPoint) -> Void) {
+        guard let pid = selectedPoint, let (ch, li) = laneIndex(targetID: selectedParam),
+              let pi = state.automationLanes[ch]?[li].points.firstIndex(where: { $0.id == pid }) else { return }
+        var pt = state.automationLanes[ch]![li].points[pi]
+        mutate(&pt)
+        state.automationLanes[ch]![li].points[pi] = pt
+    }
+
+    private func handleDragChanged(v: DragGesture.Value, size: CGSize) {
+        if !didDrag {
+            // First tick of a drag — try to grab an existing point under
+            // the start location.
+            if let pid = pointID(at: v.startLocation, size: size, threshold: 14) {
+                selectedPoint = pid
+            }
+            didDrag = true
+        }
+        guard let pid = selectedPoint, let (ch, li) = laneIndex(targetID: selectedParam),
+              let pi = state.automationLanes[ch]?[li].points.firstIndex(where: { $0.id == pid }) else {
+            return
+        }
+        var pts = state.automationLanes[ch]![li].points
+        pts[pi].time  = Double(v.location.x / size.width).clamped(to: 0...1.0)
+        pts[pi].value = Double(1.0 - v.location.y / size.height).clamped(to: 0...1.0)
+        state.automationLanes[ch]?[li].points = pts.sorted { $0.time < $1.time }
+    }
+
+    private func handleDragEnded(v: DragGesture.Value, size: CGSize) {
+        let movedSignificantly = hypot(v.translation.width, v.translation.height) > 4
+        // Tap (no significant movement) without an existing point under
+        // the cursor → insert a new point.
+        if !movedSignificantly {
+            if pointID(at: v.location, size: size, threshold: 14) == nil {
+                addPoint(at: v.location, in: size)
+            } else if let pid = pointID(at: v.location, size: size, threshold: 14) {
+                selectedPoint = pid
+            }
+        }
+        didDrag = false
+    }
+
+    private func pointID(at p: CGPoint, size: CGSize, threshold: CGFloat) -> BezierAutomationPoint.ID? {
+        guard let lane = currentLane(targetID: selectedParam, channel: 0) else { return nil }
+        var best: (id: BezierAutomationPoint.ID, d: CGFloat)? = nil
+        for pt in lane.points {
+            let pp = CGPoint(x: CGFloat(pt.time) * size.width,
+                             y: CGFloat(1.0 - pt.value) * size.height)
+            let d = hypot(pp.x - p.x, pp.y - p.y)
+            if d < threshold, best == nil || d < best!.d {
+                best = (pt.id, d)
+            }
+        }
+        return best?.id
+    }
 }
 
 public struct ExportDialogView: View {
