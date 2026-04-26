@@ -900,14 +900,70 @@ public final class AudioHost {
 
     // MARK: AUv3 plugin hosting
 
+    /// Registry of every AUv3 parameter exposed by hosted plugins, keyed by
+    /// the automation target ID:
+    ///   plugin.<channel>.<slot>.<paramAddress>     — channel inserts
+    ///   plugin.<channel>.inst.<paramAddress>       — channel instrument
+    ///   plugin.bus.<bus>.<slot>.<paramAddress>     — bus inserts
+    ///   plugin.master.eq.<paramAddress>            — master EQ (when wired)
+    ///
+    /// Read by `applyPluginAutomation` from the main actor at UI tick rate
+    /// (~30 Hz). Plugin parameter writes via `AUParameter.setValue` are
+    /// thread-safe and don't need to live on the audio thread.
+    public private(set) var pluginParamRegistry: [String: AUParameter] = [:]
+
+    private func registerPluginParams(prefix: String, au: AUAudioUnit) {
+        guard let tree = au.parameterTree else { return }
+        for p in tree.allParameters {
+            pluginParamRegistry["\(prefix).\(p.address)"] = p
+        }
+    }
+
+    /// Direct registry write — used by tests that synthesize an AUParameter
+    /// without instantiating a full plugin. Production code should prefer
+    /// `loadPlugin` / `loadBusPlugin`, which auto-register via parameterTree.
+    public func registerParameter(_ param: AUParameter, forTargetID id: String) {
+        pluginParamRegistry[id] = param
+    }
+
+    /// Walks `lanes`, picks out every lane whose `parameter` starts with
+    /// "plugin." and matches a registered AUParameter, and writes the
+    /// evaluated value to that parameter. `beatNormalized` is the project
+    /// playhead in [0, 1] (lane.evaluate clamps outside that range).
+    /// Lane values [0, 1] are mapped onto each parameter's [min, max].
+    /// Called from Timeline.syncEngineToUI at ~30 Hz.
+    public func applyPluginAutomation(lanes: [Int: [BezierAutomationLane]],
+                                       beatNormalized: Double) {
+        guard !pluginParamRegistry.isEmpty else { return }
+        for (_, lanesForCh) in lanes {
+            for lane in lanesForCh where lane.parameter.hasPrefix("plugin.") {
+                guard let param = pluginParamRegistry[lane.parameter] else { continue }
+                let v = lane.evaluate(at: beatNormalized)
+                let range = param.maxValue - param.minValue
+                let target = param.minValue + Float(v) * range
+                param.setValue(target, originator: nil)
+            }
+        }
+    }
+
     public func loadPlugin(component: AudioComponentDescription, for channel: Int) async throws {
         let au = try await AUAudioUnit.instantiate(with: component, options: [])
         try au.allocateRenderResources()
-        
+
         let isInstrument = component.componentType == kAudioUnitType_MusicDevice
-        let pluginID = isInstrument ? "\(channel)_inst" : "\(channel)_\(insertPlugins.count)"
+        let slot: String
+        let pluginID: String
+        if isInstrument {
+            slot = "inst"
+            pluginID = "\(channel)_inst"
+        } else {
+            let currentCount = Int(renderBlockWrapper?.pluginCounts[channel] ?? 0)
+            slot = "\(currentCount)"
+            pluginID = "\(channel)_\(insertPlugins.count)"
+        }
         insertPlugins[pluginID] = au
-        
+        registerPluginParams(prefix: "plugin.\(channel).\(slot)", au: au)
+
         if let wrapper = renderBlockWrapper, channel < kMaxChannels {
             if isInstrument {
                 wrapper.instrumentBlocks[channel] = au.internalRenderBlock
@@ -977,6 +1033,7 @@ public final class AudioHost {
         if let wrapper = renderBlockWrapper {
             let currentCount = Int(wrapper.busPluginCounts[busIndex])
             if currentCount < 4 {
+                registerPluginParams(prefix: "plugin.bus.\(busIndex).\(currentCount)", au: au)
                 wrapper.busInsertBlocks[busIndex * 4 + currentCount] = au.internalRenderBlock
                 wrapper.busPluginCounts[busIndex] = Int32(currentCount + 1)
             }

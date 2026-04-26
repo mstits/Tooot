@@ -115,6 +115,7 @@ public struct TrackerAppView: View {
             try? await h.setup()
             if let engine = h.trackerAU {
                 let tl = Timeline(state: playbackState, engine: engine, renderNode: h.renderNode)
+                tl.audioHost = h
                 tl.onBPMChange = { [weak h] bpm in h?.updateClockBPM(bpm) }
                 tl.onAutosaveTick = { [weak h, weak playbackState] in
                     guard let h, let playbackState else { return }

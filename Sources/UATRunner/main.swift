@@ -1301,6 +1301,65 @@ autoreleasepool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 58. Plugin parameter automation through AUv3 parameter trees
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 58. Plugin Parameter Automation ─────────────────────────────────")
+@MainActor
+func testPluginParamAutomation() {
+    let host = AudioHost()
+
+    // Synthesize an AUParameter without a real plugin so the test stays
+    // hermetic. Range [0, 1] keeps the math obvious — a lane value of 0.7
+    // should write 0.7 to the parameter.
+    let p = AUParameterTree.createParameter(
+        withIdentifier: "wet", name: "Wet", address: 42,
+        min: 0, max: 1, unit: .linearGain, unitName: nil,
+        flags: [], valueStrings: nil, dependentParameters: nil)
+    p.value = 0
+    host.registerParameter(p, forTargetID: "plugin.0.0.42")
+
+    // Build a Bezier lane that holds value 0.7 across the whole song.
+    var lane = BezierAutomationLane(parameter: "plugin.0.0.42")
+    lane.points = [
+        BezierAutomationPoint(time: 0,   value: 0.7),
+        BezierAutomationPoint(time: 1,   value: 0.7),
+    ]
+    let lanes: [Int: [BezierAutomationLane]] = [0: [lane]]
+    host.applyPluginAutomation(lanes: lanes, beatNormalized: 0.5)
+    assert(abs(p.value - 0.7) < 1e-5,
+           "Plugin param tracks lane (got \(p.value))")
+
+    // Sweep: lane 0 → 1 across the song; at beat 0.25 the value should be ~0.25.
+    var sweep = BezierAutomationLane(parameter: "plugin.0.0.42")
+    sweep.points = [
+        BezierAutomationPoint(time: 0, value: 0),
+        BezierAutomationPoint(time: 1, value: 1),
+    ]
+    host.applyPluginAutomation(lanes: [0: [sweep]], beatNormalized: 0.25)
+    assert(abs(p.value - 0.25) < 0.05,
+           "Linear sweep at 0.25 lands near 0.25 (got \(p.value))")
+
+    // Range mapping: lane [0,1] should map onto the parameter's full range.
+    let p2 = AUParameterTree.createParameter(
+        withIdentifier: "freq", name: "Freq", address: 7,
+        min: 100, max: 10_000, unit: .hertz, unitName: nil,
+        flags: [], valueStrings: nil, dependentParameters: nil)
+    p2.value = 100
+    host.registerParameter(p2, forTargetID: "plugin.0.0.7")
+    var freqLane = BezierAutomationLane(parameter: "plugin.0.0.7")
+    freqLane.points = [
+        BezierAutomationPoint(time: 0, value: 0.5),
+        BezierAutomationPoint(time: 1, value: 0.5),
+    ]
+    host.applyPluginAutomation(lanes: [0: [freqLane]], beatNormalized: 0.5)
+    let expected: Float = 100 + 0.5 * (10_000 - 100)
+    assert(abs(p2.value - expected) < 1.0,
+           "Lane [0,1] maps onto param [min,max] (got \(p2.value), expected \(expected))")
+    print("  wet @0.7 → \(p.value); freq @0.5 → \(p2.value) (expected \(expected))")
+}
+MainActor.assumeIsolated { testPluginParamAutomation() }
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 57. Cold-launch phase wall-clock — measure engine + DSP boot
 // ─────────────────────────────────────────────────────────────────────────────
 // Times the two engine init phases that don't need CoreAudio output. This is

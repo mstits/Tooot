@@ -160,8 +160,25 @@ public final class Timeline {
 
     // MARK: - UI sync (30 Hz poll)
 
+    /// Host accessor — set by AudioHost so syncEngineToUI can drive plugin
+    /// parameter automation at UI tick rate (~30 Hz).
+    public weak var audioHost: AudioHost?
+
     private func syncEngineToUI() {
         renderNode?.processDeallocations()
+        // Plugin-parameter automation: walk PlaybackState lanes, evaluate at
+        // the current normalized beat, write to the matching AUParameter.
+        // Native engine params (volume / pan / send / bus / master) are
+        // automated on the audio thread by AudioRenderNode.applyAutomation;
+        // plugin-tree params live at UI rate where AUParameter.setValue is
+        // documented thread-safe.
+        if let host = audioHost,
+           !host.pluginParamRegistry.isEmpty,
+           !state.automationLanes.isEmpty {
+            let totalRows = max(1, state.songLength * 64)
+            let beatNorm = Double(state.fractionalRow + Float(state.currentEngineRow + state.currentPattern * 64)) / Double(totalRows)
+            host.applyPluginAutomation(lanes: state.automationLanes, beatNormalized: beatNorm)
+        }
         guard let engine = audioEngine else { return }
 
         // ── Push UI values → engine shared state ────────────────────────────
