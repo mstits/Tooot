@@ -7,7 +7,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-lightgrey)
 ![Swift](https://img.shields.io/badge/swift-6.0-orange)
-[![CI](https://github.com/mstits/Tooot/actions/workflows/ci.yml/badge.svg)](https://github.com/mstits/Tooot/actions/workflows/ci.yml)
+![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
@@ -18,7 +18,9 @@ Project ToooT isn't just a traditional sequencer; it's a modern workstation desi
 ### Blazing Fast Audio Engine
 - **Zero-Allocation Render Thread**: The `ToooT_Core` audio engine runs on a strictly C-pointer-backed render loop. No Swift arrays, dictionaries, or object allocations happen on the audio thread.
 - **100% Vectorized DSP**: Leverages Apple's `vDSP` and Accelerate frameworks for all math operations—from Hermite resampling to volume ramping (`vDSP_vrampmul`) and mixing, easily supporting 256+ concurrent channels.
+- **Multi-Core Offline Render**: `renderOfflineConcurrent` parallelizes voice processing across cores via `DispatchQueue.concurrentPerform` with a per-voice scratch pool — meaningful speedup on M-series for `exportAudio` bounces. Bit-exact-modulo-fp-reorder parity with the serial path (verified by UAT 53, max diff ≤ 1e-7).
 - **Plugin Delay Compensation (PDC)**: Sample-accurate delay compensation ensures your tracks remain perfectly phase-aligned, even when routing through heavy AUv3 effect chains.
+- **Variable Sample Rate**: 44.1 / 48 / 88.2 / 96 / 192 kHz threaded end-to-end through the render block, voices, metering, and export.
 
 ### Metal GPU Accelerated UI
 - **120Hz Pattern Grid**: The core tracker sequencer is rendered natively using `MetalKit`. By utilizing GPU instancing, ToooT handles thousands of scrolling note cells with zero CPU overhead and ultra-low UI latency.
@@ -48,19 +50,29 @@ Post-human generative algorithms built directly into the UI:
 - **L-System Arpeggios**: Generate fractal, organic note sequences based on biological growth algorithms.
 - **Synthesis Tiers**: Tweak high-level algorithmic parameters like "Corruption," "Arrhythmia," and "Fractal Dimension" to introduce controlled chaos.
 
-### Professional Mixing, AUv3 & VST3 Hosting
+### Professional Mixing, AUv3 / VST3 / CLAP Hosting
 - **Studio Console**: A virtualized, high-performance mixing console with custom `StudioKnob` and `StudioFader` widgets.
 - **Pro Instrument Browser**: Unified plugin manager with dedicated filtering for **Native Instruments** (Kontakt, Massive, etc.) and search functionality.
-- **JUCE VST3 Bridge**: Support for Steinberg VST3 plugins via a high-performance Objective-C++ bridging layer.
+- **AUv3 Hosting**: Per-channel insert chains (4 inserts + 1 instrument) plus per-bus insert chains on every aux bus.
+- **CLAP Hosting**: Native BSD-3-licensed ABI; full discovery, load, and real-time process. u-he / FabFilter / Surge XT supported.
+- **VST3 Bridge**: Direct Objective-C++ bridge against the Steinberg SDK. No JUCE dependency.
 - **Sidechain Ducking**: Real-time global signal routing for professional mix "pumping" effects.
-- **Master Safety Limiter**: Hardware-accelerated (vDSP) 1ms attack limiter active by default to prevent digital clipping.
-- **Vectorized Automation**: Draw complex Bezier curves for volume, panning, and pitch.
+- **Mastering Chain**: True-peak limiter (4× inter-sample), multiband compressor, linear-phase EQ scaffold, ITU-R BS.1770-4 LUFS metering, TPDF dither, loudness-normalized export to Spotify / Apple Music / YouTube / EBU R128 targets.
+- **Render-Path Automation**: Atomic snapshot publishes per-row evaluator covering channel volume / pan / send, bus volume, master volume — runs on the audio thread without locks.
+- **Bezier Automation Editor**: Draw curves for volume, panning, and pitch in the dedicated automation tab.
 
 ### Universal Format Compatibility
-- **Lossless `.mad` Format**: Native chunk-based file format that perfectly preserves all high-resolution DSP, AUv3/VST3 states, and automation.
+- **Lossless `.mad` Format**: Native chunk-based file format that perfectly preserves all high-resolution DSP, AUv3/VST3 states, scenes, and automation.
 - **Retro Support**: Flawless loading and playback of classic `.mod`, `.xm`, `.it`, and `.s3m` tracker formats.
 - **Sidebar Sample Browser**: Integrated filesystem navigator with **Universal Drag & Drop** for samples and project files.
-- **Video Sync**: Load `.mp4` or `.mov` files to perfectly synchronize your composition to a video timecode.
+- **Video Sync**: Load `.mp4` or `.mov` files to follow your composition; `VideoSyncModel` corrects drift > 1 frame.
+- **Quick Look + Spotlight Primitives**: `MADMetadataReader` + `MADThumbnail` ship pure-Foundation/CoreGraphics extractors ready to drop into a Quick Look `.appex` or Spotlight `.mdimporter` (recipes in `docs/MAD_QUICKLOOK_SPOTLIGHT.md`).
+
+### macOS Native Integration
+- **AppIntents (Shortcuts.app)**: Open Project / Open Last Autosave / New Project intents discoverable from Spotlight and the Shortcuts gallery.
+- **Auto-Save + Crash Recovery**: 60 s autosave cadence with rolling 10-file per-title window; on launch, recent autosaves surface in a recovery sheet for one-click restore.
+- **Document Type Registration**: Finder double-click on `.mad` opens ToooT (UTI declared in the bundle's `Info.plist`).
+- **Cold-Launch Instrumentation**: `os_signpost` intervals on EngineBoot / InternalDSPBoot / OutputUnitBoot under subsystem `com.apple.ProjectToooT` / category `ColdLaunch` for Instruments profiling.
 
 ---
 
@@ -142,7 +154,7 @@ graph TD;
 
 - **`ToooT_Core`**: The beating heart of the DAW. Contains the zero-allocation `AudioRenderNode`, pattern sequencer, envelope evaluators, atomic data structures, `MasterMeter` (LUFS / true-peak / phase correlation), `MusicTheory`, `Arpeggiator`, `Arrangement`, `SessionGrid`, `Automation`, `Scenes`, `StarterContent`, `Fuzzer`, `StabilityMonitor`.
 - **`ToooT_UI`**: SwiftUI frontend. Houses the GPU-accelerated pattern grid, mixer, JIT console, waveform editor, **arrangement timeline**, **session clip-launch grid**, command palette, undo-history browser, crash-recovery sheet, video sync, JS scripting host, TTS via `AVSpeechSynthesizer`.
-- **`ToooT_IO`**: Custom parsers (`MADParser`, `MADWriter`), `MIDI2Manager` (MIDI 2.0 UMP + MPE dispatch), `SpatialManager` (PHASE 3D audio).
+- **`ToooT_IO`**: Custom parsers (`MADParser`, `MADWriter`), `MIDI2Manager` (MIDI 2.0 UMP + MPE dispatch), `SpatialManager` (PHASE 3D audio), `MADMetadataReader` + `MADThumbnail` (Quick Look / Spotlight extractors).
 - **`ToooT_Plugins`**: AUv3 hosting + bundled DSP (`ReverbPlugin`, `StereoWidePlugin`, `TruePeakLimiter`, `MultibandCompressor`, `LinearPhaseEQ`) + `MasteringExport` (TPDF dither + LUFS normalize) + `OfflineDSP` + `GPU_DSP` (Metal compute kernels).
 - **`ToooT_VST3`**: Objective-C++ bridge linking directly against Steinberg's VST3 SDK. No JUCE.
 - **`ToooT_CLAP` / `ToooT_CLAP_C`**: BSD-3-Clause CLAP plugin host. BSD-licensed ABI vendored; C loader wraps `dlopen` on `.clap` bundles; Swift layer manages instance lifecycle.
@@ -174,10 +186,17 @@ open ToooT.app
 
 ## Testing
 
-The repository includes an extensive 100+ assertion User Acceptance Testing (UAT) suite that validates the audio engine, UI transport synchronization, and DSP memory safety.
+The repository includes a 230+ assertion User Acceptance Testing (UAT) suite covering the audio engine, mastering chain, plugin hosting, mixer routing, MIDI 2.0 / MPE dispatch, automation evaluator, snapshot lifecycle, and a multi-second A/B comparison against `openmpt123` for tracker-format fidelity. Concurrent / serial render parity is asserted bit-exact-modulo-fp-reorder.
 
 ```bash
 swift build && .build/arm64-apple-macosx/debug/UATRunner
+```
+
+A separate fuzz runner feeds random bytes at the parsers (`MADParser`, MIDI UMP, `FormatTranspiler`) and a stress runner exercises the engine under sustained load:
+
+```bash
+.build/arm64-apple-macosx/debug/FuzzRunner
+.build/arm64-apple-macosx/debug/StressRunner
 ```
 
 ---
@@ -187,9 +206,14 @@ swift build && .build/arm64-apple-macosx/debug/UATRunner
 Deeper reading in `docs/`:
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — module graph, thread model, render pipeline, snapshot lifecycle, memory ownership.
+- [FEATURE_ROADMAP.md](docs/FEATURE_ROADMAP.md) — honest assessment of what ships today vs what pro DAWs offer; current state of every roadmap item.
+- [TUTORIAL.md](docs/TUTORIAL.md) — first-session walkthrough.
 - [MAD_FORMAT.md](docs/MAD_FORMAT.md) — `.mad` file layout, instrument header, plugin-state trailer, round-trip guarantees.
+- [MAD_QUICKLOOK_SPOTLIGHT.md](docs/MAD_QUICKLOOK_SPOTLIGHT.md) — recipes for wrapping the Quick Look `.appex` and Spotlight `.mdimporter` extensions in Xcode.
 - [JIT_SHELL.md](docs/JIT_SHELL.md) — ToooTShell command reference and macro system.
 - [PLUGINS.md](docs/PLUGINS.md) — AUv3 hosting contract, bundled effects, VST3 status and enablement steps.
+
+For release-by-release changes, see [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
