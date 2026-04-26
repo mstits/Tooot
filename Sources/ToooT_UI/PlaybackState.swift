@@ -47,6 +47,17 @@ public final class PlaybackState: @unchecked Sendable {
     
     public var peakLevel: Float = 0.0; public var activeVoices: Int = 0; public var algSeed: UInt32 = 0
     public var isRecording: Bool = false; public var recordedSamplesL: [Float] = []; public var recordedSamplesR: [Float] = []
+    /// Per-channel take stacks. Each `TakeLane` owns the recorded passes
+    /// for one channel. Replace mode clears the lane on each new record;
+    /// overdub mode appends. Loop mode appends one take per loop pass.
+    public var takeLanes: [Int: TakeLane] = [:]
+    /// Mode for the next `startRecording` call. Defaults to .replace —
+    /// the legacy behavior. Overdub leaves prior takes intact and stacks
+    /// the new one on top.
+    public var recordingMode: RecordingMode = .replace
+    /// Channel whose take stack the next recording lands in. -1 means
+    /// "no channel — just capture into recordedSamplesL/R as before".
+    public var recordingChannel: Int = -1
     
     public var masterVolume: Double = 0.8; public var isStereoWideEnabled: Bool = false; public var isReverbEnabled: Bool = false; public var isMasterEQEnabled: Bool = false
     /// 10 master-EQ band gains in dB (0 = flat). Bands: 31/62/125/250/500/1k/2k/4k/8k/16k Hz.

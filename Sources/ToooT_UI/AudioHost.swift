@@ -769,6 +769,38 @@ public final class AudioHost {
         masterEQAU?.setBandGain(dB, band: band)
     }
 
+    /// Finalises the in-progress recording buffer into a `RecordingTake` on
+    /// the configured channel's take lane, honoring `state.recordingMode`.
+    /// Replace clears the lane; overdub / loop append.
+    ///
+    /// Assumes the audio capture (recordedSamplesL/R) has been populated
+    /// by the existing startRecording / stopRecording flow.
+    public func commitTakeFromRecording(state: PlaybackState, name: String? = nil) {
+        let ch = state.recordingChannel
+        guard ch >= 0, ch < kMaxChannels,
+              let engine = trackerAU,
+              !state.recordedSamplesL.isEmpty else { return }
+        let n = min(state.recordedSamplesL.count, state.recordedSamplesR.count)
+        let lane = state.takeLanes[ch] ?? TakeLane(channelIndex: ch)
+        var take = RecordingTake(
+            name: name ?? "Take \(lane.takes.count + 1)",
+            channelIndex: ch,
+            sampleRate: engine.sampleRate)
+        take.samplesL = Array(state.recordedSamplesL.prefix(n))
+        take.samplesR = Array(state.recordedSamplesR.prefix(n))
+
+        switch state.recordingMode {
+        case .replace:
+            lane.replaceWith(take)
+        case .overdub, .loop:
+            lane.addTake(take)
+        }
+        state.takeLanes[ch] = lane
+        // Clear the working buffers — next recording starts fresh.
+        state.recordedSamplesL.removeAll()
+        state.recordedSamplesR.removeAll()
+    }
+
     public func midiPanic(state: PlaybackState) {
         state.isPlaying = false
         trackerAU?.sharedStatePtr.pointee.isPlaying = 0

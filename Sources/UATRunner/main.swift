@@ -1301,6 +1301,50 @@ autoreleasepool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 60. Recording — take lanes + replace / overdub / loop modes
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 60. Recording Take Lanes ───────────────────────────────────────")
+autoreleasepool {
+    let lane = TakeLane(channelIndex: 0)
+    var t1 = RecordingTake(name: "T1", channelIndex: 0, sampleRate: 44100)
+    t1.samplesL = [0.1, 0.2]; t1.samplesR = [0.1, 0.2]
+    lane.addTake(t1)
+    assert(lane.takes.count == 1, "First take added")
+    assert(lane.activeTake?.name == "T1", "First take is active")
+
+    var t2 = RecordingTake(name: "T2", channelIndex: 0, sampleRate: 44100)
+    t2.samplesL = [0.3]; t2.samplesR = [0.3]
+    lane.addTake(t2)
+    assert(lane.takes.count == 2, "Second take added (overdub)")
+    assert(lane.activeTake?.name == "T2", "Latest take is the active one")
+    assert(lane.takes[0].isActive == false, "Earlier take deactivated")
+
+    // Replace mode — drops everything.
+    var t3 = RecordingTake(name: "T3", channelIndex: 0, sampleRate: 44100)
+    t3.samplesL = [0.4]; t3.samplesR = [0.4]
+    lane.replaceWith(t3)
+    assert(lane.takes.count == 1, "Replace dropped prior takes")
+    assert(lane.activeTake?.name == "T3", "Replace's take is active")
+
+    // setActive flip.
+    lane.addTake(t1); lane.addTake(t2)
+    assert(lane.activeTake?.name == "T2", "Latest of three is active")
+    lane.setActive(takeID: lane.takes[0].id)
+    assert(lane.activeTake?.name == "T3", "setActive promotes named take")
+
+    // Remove + auto-promote.
+    lane.remove(takeID: lane.takes.last!.id)
+    let active = lane.activeTake
+    assert(active != nil, "After remove, an active take remains")
+
+    // Codable round-trip.
+    let data = try! JSONEncoder().encode(lane)
+    let restored = try! JSONDecoder().decode(TakeLane.self, from: data)
+    assert(restored.takes.count == lane.takes.count,
+           "TakeLane survives JSON round-trip")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 59. Tempo automation + markers + time signatures
 // ─────────────────────────────────────────────────────────────────────────────
 print("\n── 59. Tempo / Markers / Time Signatures ───────────────────────────")
