@@ -1301,6 +1301,95 @@ autoreleasepool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 61. Arrangement engine consumption — pattern clips drive playback
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 61. Arrangement Engine Consumption ──────────────────────────────")
+@MainActor
+func testArrangementConsumption() {
+    // Build a snapshot where pattern 0 row 0 is silent, but pattern 5 row 0
+    // has a noteOn on channel 0. Without arrangement: nothing plays
+    // (orderList → pattern 0). With arrangement: a track placed at
+    // channelIndex 0 with a pattern clip referencing pattern 5 should
+    // route the engine to pattern 5's events for channel 0.
+
+    let evSlab = UnsafeMutablePointer<TrackerEvent>.allocate(capacity: kMaxChannels * 64 * 100)
+    evSlab.initialize(repeating: .empty, count: kMaxChannels * 64 * 100)
+    defer { evSlab.deallocate() }
+    let envSlab = UnsafeMutablePointer<Int32>.allocate(capacity: 256)
+    envSlab.initialize(repeating: 0, count: 256)
+    defer { envSlab.deallocate() }
+    let instSlab = UnsafeMutablePointer<Instrument>.allocate(capacity: 256)
+    instSlab.initialize(repeating: Instrument(), count: 256)
+    defer { instSlab.deallocate() }
+    var inst = Instrument()
+    inst.setSingleRegion(SampleRegion(offset: 0, length: 100_000))
+    instSlab[1] = inst
+
+    // Pattern 5 row 0 channel 0: noteOn 440 Hz, instrument 1.
+    let pat5Row0Idx = (5 * 64 + 0) * kMaxChannels + 0
+    evSlab[pat5Row0Idx] = TrackerEvent(
+        type: .noteOn, channel: 0, instrument: 1,
+        value1: 440, value2: 0.5)
+
+    // Build arrangement: track at channelIndex 0 with pattern clip → pattern 5.
+    let arr = Arrangement(bpm: 120)
+    var track = Track(name: "Drums", channelIndex: 0)
+    track.add(Clip(kind: .pattern, name: "Drop",
+                   start: Beats(0), duration: Beats(16),
+                   sourceIndex: 5))
+    arr.tracks.append(track)
+
+    // First: render WITH arrangement; expect the voice to trigger.
+    let cd = AudioComponentDescription(
+        componentType: kAudioUnitType_Generator, componentSubType: 0x546f6f6f,
+        componentManufacturer: 0x4170706c, componentFlags: 0, componentFlagsMask: 0)
+    AUAudioUnit.registerSubclass(AudioEngine.self, as: cd, name: "ToooT-Probe61", version: 1)
+    guard let au = try? AudioEngine(componentDescription: cd, options: [], sampleRate: 44100) else {
+        assert(false, "AudioEngine inits"); return
+    }
+    try? au.allocateRenderResources()
+    let st = au.sharedStatePtr
+    st.pointee.bpm = 120; st.pointee.ticksPerRow = 6; st.pointee.isPlaying = 1
+    let snapWithArr = SongSnapshot(
+        events: evSlab, instruments: instSlab,
+        orderList: [0], songLength: 1,
+        volEnv: envSlab, panEnv: envSlab, pitchEnv: envSlab,
+        arrangement: arr)
+
+    let buf = UnsafeMutablePointer<Float>.allocate(capacity: 4096)
+    buf.initialize(repeating: 0, count: 4096)
+    defer { buf.deallocate() }
+    let buf2 = UnsafeMutablePointer<Float>.allocate(capacity: 4096)
+    buf2.initialize(repeating: 0, count: 4096)
+    defer { buf2.deallocate() }
+    _ = au.renderNode.renderOffline(frames: 2048, snap: snapWithArr,
+                                    state: st, bufferL: buf, bufferR: buf2)
+    let voiceWithArr = au.renderNode.resources.voices[0].active
+
+    // Reset and render WITHOUT arrangement (snap.arrangement = nil).
+    st.pointee.isPlaying = 1
+    st.pointee.samplesProcessed = 0
+    st.pointee.currentOrder = 0
+    st.pointee.currentEngineRow = 0
+    au.renderNode.resources.voices[0].active = false
+    let snapNoArr = SongSnapshot(
+        events: evSlab, instruments: instSlab,
+        orderList: [0], songLength: 1,
+        volEnv: envSlab, panEnv: envSlab, pitchEnv: envSlab,
+        arrangement: nil)
+    _ = au.renderNode.renderOffline(frames: 2048, snap: snapNoArr,
+                                    state: st, bufferL: buf, bufferR: buf2)
+    let voiceNoArr = au.renderNode.resources.voices[0].active
+
+    assert(voiceWithArr == true,
+           "Arrangement clip → engine triggers pattern 5 event on channel 0")
+    assert(voiceNoArr == false,
+           "Without arrangement, pattern 5 events stay dormant (order list points at pattern 0)")
+    print("  with arrangement: ch0 active=\(voiceWithArr); without: ch0 active=\(voiceNoArr)")
+}
+MainActor.assumeIsolated { testArrangementConsumption() }
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 60. Recording — take lanes + replace / overdub / loop modes
 // ─────────────────────────────────────────────────────────────────────────────
 print("\n── 60. Recording Take Lanes ───────────────────────────────────────")

@@ -19,6 +19,12 @@ public struct SongSnapshot: @unchecked Sendable {
     public let instruments: UnsafeMutablePointer<Instrument>
     public let orderList:   [Int]
     public let songLength:  Int
+    /// Optional linear arrangement. When non-nil, processTickSequencer
+    /// consults it per channel: an active pattern clip on a track
+    /// overrides the order-list lookup for that track's channelIndex,
+    /// playing the clip's referenced pattern instead. When nil (the
+    /// default), classic pattern-grid playback applies.
+    public let arrangement: Arrangement?
 
     // Per-instrument envelope enable flags (raw pointers for RT safety)
     public let volEnvEnabled:   UnsafeMutablePointer<Int32>
@@ -61,7 +67,8 @@ public struct SongSnapshot: @unchecked Sendable {
                 songLength: Int,
                 volEnv: UnsafeMutablePointer<Int32>,
                 panEnv: UnsafeMutablePointer<Int32>,
-                pitchEnv: UnsafeMutablePointer<Int32>) {
+                pitchEnv: UnsafeMutablePointer<Int32>,
+                arrangement: Arrangement? = nil) {
         self.events      = events
         self.instruments = instruments
         self.orderList   = orderList
@@ -69,6 +76,7 @@ public struct SongSnapshot: @unchecked Sendable {
         self.volEnvEnabled   = volEnv
         self.panEnvEnabled   = panEnv
         self.pitchEnvEnabled = pitchEnv
+        self.arrangement = arrangement
     }
 }
 
@@ -545,8 +553,20 @@ public final class AudioRenderNode: Sendable {
                 res.pendingParam[ch] = 0
             }
 
+            // Arrangement-driven playback: when snap.arrangement is non-nil,
+            // each track's active pattern clip overrides the order-list lookup
+            // for that track's channelIndex. Channels with no active clip fall
+            // through to the standard pattern-grid path. Beat conversion uses
+            // the tracker convention of 4 rows per beat.
+            let beatNow = Double(absRow) / 4.0
             for ch in 0..<kMaxChannels {
-                let idx = absRow * kMaxChannels + ch
+                var eventRow = absRow
+                if let arr = snap.arrangement {
+                    if let (trackPat, rowInClip) = arr.activePatternRow(forChannel: ch, atBeat: beatNow) {
+                        eventRow = trackPat * 64 + rowInClip
+                    }
+                }
+                let idx = eventRow * kMaxChannels + ch
                 guard idx >= 0 && idx < kMaxChannels * 64 * 100 else { continue }
                 let ev = snap.events[idx]
                 guard ev.type != .empty || ev.effectCommand > 0 || ev.effectParam > 0 || ev.instrument > 0 else { continue }

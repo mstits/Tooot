@@ -207,6 +207,33 @@ public final class Arrangement: @unchecked Sendable, Codable {
         Beats(tracks.map { $0.totalDuration.value }.max() ?? 0)
     }
 
+    /// Render-path helper: at the given playhead `beat`, returns the
+    /// (patternIndex, rowWithinPattern) tuple for the track whose
+    /// `channelIndex` matches `ch` — if a pattern clip is active there.
+    /// Returns `nil` when no clip is active for that channel, in which
+    /// case the engine falls back to its order-list lookup.
+    ///
+    /// Tracker convention: 64 rows per pattern, 4 rows per beat → 16
+    /// beats per pattern. The clip's `start.value` is the project beat
+    /// at which the clip begins; `(beat - clip.start) * 4` gives the
+    /// row offset within the clip's source pattern, modulo 64 so loops
+    /// in long clips wrap.
+    public func activePatternRow(forChannel ch: Int, atBeat beat: Double) -> (pattern: Int, row: Int)? {
+        let anySolo = tracks.contains { $0.soloed }
+        for track in tracks where track.channelIndex == ch {
+            if anySolo && !track.soloed { continue }
+            if track.muted { continue }
+            for clip in track.clips where clip.kind == .pattern {
+                guard !clip.muted else { continue }
+                if beat >= clip.start.value && beat < clip.start.value + clip.duration.value {
+                    let rowOffset = Int(((beat - clip.start.value) * 4.0).rounded(.down)) % 64
+                    return (pattern: clip.sourceIndex, row: rowOffset)
+                }
+            }
+        }
+        return nil
+    }
+
     // MARK: - Serialization helpers (for .mad TOOO chunk alongside scenes + plugin states)
 
     public func exportAsPluginStateData() -> [String: Data] {
