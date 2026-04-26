@@ -1301,6 +1301,86 @@ autoreleasepool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 59. Tempo automation + markers + time signatures
+// ─────────────────────────────────────────────────────────────────────────────
+print("\n── 59. Tempo / Markers / Time Signatures ───────────────────────────")
+autoreleasepool {
+    // Tempo lane: 100 → 140 BPM across the song.
+    let res = RenderResources(maxFrames: 1024)
+    let st  = UnsafeMutablePointer<EngineSharedState>.allocate(capacity: 1)
+    st.initialize(to: EngineSharedState())
+    st.pointee.bpm = 100
+    st.pointee.ticksPerRow = 6
+    st.pointee.isPlaying   = 1
+    defer { st.deallocate() }
+
+    let evt  = AtomicRingBuffer<TrackerEvent>(capacity: 16)
+    let bank = UnifiedSampleBank(capacity: 1024)
+    let node = AudioRenderNode(resources: res, statePtr: st, bank: bank,
+                               eventBuffer: evt, sampleRate: 44100)
+
+    var tempoLane = ToooT_Core.AutomationLane(targetID: "tempo.bpm")
+    tempoLane.setPoint(beat: 0,    value: 140)
+    tempoLane.setPoint(beat: 1000, value: 140)
+    let snap = AutomationSnapshot(lanes: ["tempo.bpm": tempoLane])
+    node.swapAutomationSnapshot(snap)
+
+    let outL = UnsafeMutablePointer<Float>.allocate(capacity: 4096)
+    let outR = UnsafeMutablePointer<Float>.allocate(capacity: 4096)
+    outL.initialize(repeating: 0, count: 4096)
+    outR.initialize(repeating: 0, count: 4096)
+    defer { outL.deallocate(); outR.deallocate() }
+    _ = node.renderOffline(frames: 4096, snap: SongSnapshot.createEmpty(),
+                           state: st, bufferL: outL, bufferR: outR)
+    assert(st.pointee.bpm == 140,
+           "Tempo automation wrote BPM (got \(st.pointee.bpm))")
+
+    // Out-of-range clamp.
+    var crazyLane = ToooT_Core.AutomationLane(targetID: "tempo.bpm")
+    crazyLane.setPoint(beat: 0, value: 5000)
+    let clampSnap = AutomationSnapshot(lanes: ["tempo.bpm": crazyLane])
+    node.swapAutomationSnapshot(clampSnap)
+    st.pointee.isPlaying = 1; st.pointee.samplesProcessed = 0
+    _ = node.renderOffline(frames: 4096, snap: SongSnapshot.createEmpty(),
+                           state: st, bufferL: outL, bufferR: outR)
+    assert(st.pointee.bpm <= 999,
+           "Tempo lane clamps to 999 BPM (got \(st.pointee.bpm))")
+
+    // Markers + seek
+    let map = TimingMap()
+    map.addMarker(Marker(name: "Drop", beat: 16))
+    map.addMarker(Marker(name: "Bridge", beat: 32))
+    map.addMarker(Marker(name: "Outro", beat: 48))
+    assert(map.marker(named: "Drop")?.beat == 16, "marker lookup by name")
+    assert(map.markers.map(\.beat) == [16, 32, 48], "markers stay sorted")
+
+    // Time signatures
+    map.setTimeSignature(at: 0,  numerator: 4, denominator: 4)
+    map.setTimeSignature(at: 16, numerator: 6, denominator: 8)
+    let earlySig = map.timeSignature(at: 8)
+    let lateSig  = map.timeSignature(at: 20)
+    assert(earlySig.numerator == 4 && earlySig.denominator == 4,
+           "Time signature at beat 8 = 4/4")
+    assert(lateSig.numerator == 6 && lateSig.denominator == 8,
+           "Time signature at beat 20 = 6/8")
+
+    // Round-trip via plugin state.
+    let blob = map.exportAsPluginStateData()
+    let restored = TimingMap.importFromPluginStateData(blob)
+    assert(restored?.markers.count == 3, "TimingMap survives JSON round-trip")
+    assert(restored?.timeSignature(at: 20).numerator == 6,
+           "Time-sig change survives round-trip")
+
+    // PlaybackState.seekToMarker
+    let st2 = PlaybackState()
+    st2.songLength = 4   // 4 patterns = 4 * 64 = 256 rows
+    st2.timingMap.addMarker(Marker(name: "Drop", beat: 16))   // row 64 → order 1, row 0
+    st2.seekToMarker(named: "Drop")
+    assert(st2.currentOrder == 1 && st2.currentEngineRow == 0,
+           "seekToMarker lands at expected order/row (got \(st2.currentOrder)/\(st2.currentEngineRow))")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 58. Plugin parameter automation through AUv3 parameter trees
 // ─────────────────────────────────────────────────────────────────────────────
 print("\n── 58. Plugin Parameter Automation ─────────────────────────────────")

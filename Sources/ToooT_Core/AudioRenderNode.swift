@@ -455,6 +455,16 @@ public final class AudioRenderNode: Sendable {
             state.pointee.masterVolume = max(0, value)
             return
         }
+        // Global tempo automation. Lane writes a BPM in [20, 999]; the
+        // sequencer reads state.pointee.bpm at the start of every row to
+        // recompute samplesPerTick, so a per-row update is the natural
+        // resolution. Out-of-range values are clamped — preventing a
+        // stray lane from grinding the engine to a halt or chirping it.
+        if target == "tempo.bpm" {
+            let clamped = max(20, min(999, Int32(value.rounded())))
+            state.pointee.bpm = clamped
+            return
+        }
         // Split by '.' — small, no allocations beyond the ArraySlice that Swift
         // creates for the Substring sequence (cheap; bounded to 4 segments).
         let parts = target.split(separator: ".", omittingEmptySubsequences: false)

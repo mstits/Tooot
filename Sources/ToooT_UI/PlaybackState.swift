@@ -115,6 +115,24 @@ public final class PlaybackState: @unchecked Sendable {
     /// at save time; imported on load).
     public let sceneBank = SceneBank()
 
+    /// Markers + time-signature changes. Persisted alongside scenes in the
+    /// `.mad` `TOOO` chunk. Render-path consumption of time-sig changes is
+    /// not yet wired (mid-song meter changes affect bar boundaries
+    /// non-trivially); markers are seek targets.
+    public let timingMap = TimingMap()
+
+    /// Seeks the playhead to a named marker. No-op if the marker is missing.
+    /// Tracker convention: 4 rows per beat → row = beat * 4, with order
+    /// derived as row / 64.
+    public func seekToMarker(named name: String) {
+        guard let m = timingMap.marker(named: name) else { return }
+        let absRow = Int((m.beat * 4.0).rounded())
+        currentOrder = max(0, min(songLength - 1, absRow / 64))
+        currentEngineRow = absRow % 64
+        currentUIRow = currentEngineRow
+        fractionalRow = 0
+    }
+
     /// CC-lane storage keyed by "pat.<pattern>.ch.<channel>.cc.<cc>" → [col:value].
     /// Persists through the `.mad` TOOO chunk via `pluginStates` merge at save time.
     /// Values are 0…1 normalized (translated to MIDI 0–127 on output).
