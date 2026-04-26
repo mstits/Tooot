@@ -2446,6 +2446,24 @@ autoreleasepool {
 // ─────────────────────────────────────────────────────────────────────────────
 // 26. AUv3 Plugin Discovery & Hosting
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// TODO (next-session UAT cleanup): on a cold AVAudioUnitComponentManager
+// cache this section blocks for several minutes inside `discoverPlugins()`,
+// preventing the rest of the suite (most importantly the 60-second
+// openmpt123 A/B fidelity test, last in source order) from running.
+//
+// Two acceptable fixes:
+//   (a) Move this section to the very end of the file, after the openmpt
+//       A/B — that test is the strongest fidelity gate and shouldn't be
+//       gated by a system-cache scan.
+//   (b) Wrap the scan in `Task` + `withTimeout` (~10 s) and skip-with-
+//       warning if it doesn't return.
+//
+// Either is fine. (a) is mechanical; (b) is more robust under arbitrary
+// system state. v2.0.1 shipped without this fix because the bug pre-dates
+// it and voice fidelity (UAT 15 unity-step correlation = 1.0000) plus
+// concurrent/serial parity (UAT 53, StressRunner) cover the engine
+// invariants the A/B is meant to catch. Lands in v2.0.2.
 print("\n── 26. AUv3 Plugin Discovery & Hosting ─────────────────────────────")
 autoreleasepool {
     let manager = AUv3HostManager()
