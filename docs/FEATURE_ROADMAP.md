@@ -71,8 +71,8 @@ flowchart LR
 ### 1. Variable sample rate ✅ **SHIPPED**
 `AudioEngine(sampleRate:)` and `AudioRenderNode(sampleRate:)` stored properties threaded through the render block, offline render, SynthVoice.process, MasterMeter, AUAudioUnitBus format, CoreAudio output stream, exportAudio, exportStems, freezeChannel, SpatialManager, CLAP instance rate. UAT suite 36 verifies 48 kHz end-to-end.
 
-### 2. Linear arrangement view ⚠ **PARTIAL**
-`ToooT_Core/Arrangement.swift` ships the model: `Track → [Clip]`, `Clip` carries `start`/`duration`/`fadeIn`/`fadeOut`/`gainLinear`/`offset`/kind. `ToooT_UI/ArrangementView.swift` renders the timeline with zoom + playhead + drag-to-move + drag-to-resize, persisting through the `.mad` `TOOO` chunk. Render-path consumption (`AudioRenderNode` reading clips instead of patterns) is the remaining work — the view edits the model but the engine still plays the pattern grid.
+### 2. Linear arrangement view ✅ **SHIPPED**
+`ToooT_Core/Arrangement.swift` ships the model: `Track → [Clip]`, `Clip` carries `start`/`duration`/`fadeIn`/`fadeOut`/`gainLinear`/`offset`/kind. `ToooT_UI/ArrangementView.swift` renders the timeline with zoom + playhead + drag-to-move + drag-to-resize, persisting through the `.mad` `TOOO` chunk. **Render-path consumption shipped:** `Arrangement.activePatternRow(forChannel:atBeat:)` overrides the engine's order-list lookup per channel — placing a pattern clip on a track at channelIndex 0 makes the engine play that pattern's events for channel 0. Audio clips (.audio) and MIDI clips (.midi) still need direct render-path support (the voice system needs a PCM-region playback mode for audio clips); pattern clips are the v1.
 
 ### 3. Clip-based audio editing
 **Today:** audio is instruments + tracker triggers.
@@ -91,10 +91,10 @@ Aux bus **plumbing** ships: `kAuxBusCount = 4` stereo buses in `RenderResources`
 `MasterMeter` in `ToooT_Core/Metering.swift` implements ITU-R BS.1770-4: pre-filter high-shelf + RLB high-pass biquads (recomputed per sample rate), 100 ms block accumulator → momentary (400 ms) + short-term (3 s) + gated integrated (absolute −70 LU gate). 4× linear-interp true-peak detection. Pearson L/R phase correlation over 400 ms. Wired on the post-limiter master. Key fix: `reset()` clears biquad history so post-transient filter decay doesn't pin integrated LUFS at ~−37 dB after transport stop.
 
 ### 7. Automation beyond Bezier volume/pan/pitch ✅ **SHIPPED**
-`AutomationSnapshot` is published atomically to `AudioRenderNode` and consumed at every row boundary by `AudioRenderNode.applyAutomation`. Supported target IDs: `ch.<N>.{volume,pan,send.<bus>}`, `bus.<B>.volume`, `master.volume`. Lock-free swap mirrors the song-snapshot pattern. `Timeline.publishSnapshot` rebuilds + republishes whenever `PlaybackState` changes (legacy UI Bezier lanes are converted inline). Plugin-parameter automation through AUv3 parameter trees + capture-on-edit are still pending.
+`AutomationSnapshot` is published atomically to `AudioRenderNode` and consumed at every row boundary by `AudioRenderNode.applyAutomation`. Supported target IDs: `ch.<N>.{volume,pan,send.<bus>}`, `bus.<B>.volume`, `master.volume`, `tempo.bpm`, and `plugin.<channel>.<slot>.<paramAddress>` / `plugin.bus.<bus>.<slot>.<paramAddress>` for AUv3 parameter trees. Native engine params automated on the audio thread; plugin params automated at UI tick rate via `AudioHost.applyPluginAutomation` (AUParameter.setValue is documented thread-safe). Lock-free swap mirrors the song-snapshot pattern. `Timeline.publishSnapshot` republishes whenever `PlaybackState` changes (legacy UI Bezier lanes are converted inline). Capture-on-edit (write/touch/latch/trim modes) is the remaining piece.
 
 ### 8. Multi-core render scheduling ⚠ **PARTIAL**
-Offline path is parallelized: `AudioRenderNode.renderOfflineConcurrent` uses `DispatchQueue.concurrentPerform` with a pre-allocated per-thread voice scratch pool (`RenderResources.voiceThreadSlots = 8`) and `mixLock`-protected mixing. `AudioHost.exportAudio` now drives bounces through this path — meaningful speedup on M-series. Realtime render block is still serial; a per-track GCD graph for live playback is the remaining work (~800 lines + threading review).
+Offline path is parallelized: `AudioRenderNode.renderOfflineConcurrent` uses `DispatchQueue.concurrentPerform` with a per-voice scratch pool (`voiceThreadSlots = kMaxChannels` — one slot per voice, no modulo aliasing after the v2.0.1 fix) and `mixLock`-protected mixing. `AudioHost.exportAudio` now drives bounces through this path — meaningful speedup on M-series. Bit-exact-modulo-fp-reorder parity with the serial path verified by UAT 53 (max diff < 1e-6). **Realtime render block is still serial.** Live multi-core needs a dedicated session: pthread-based worker pool with high-priority QoS, lock-free per-voice accumulators (concurrentPerform inside the audio callback is unsafe — priority inversion + unbounded latency), stress testing across block sizes / channel counts. Roughly ~800 lines + thorough threading review. Risk of glitches if rushed.
 
 ### 9. High-order plugin latency compensation
 **Today:** PDC works per-channel with a flat 1 s maximum.
@@ -137,8 +137,8 @@ Offline path is parallelized: `AudioRenderNode.renderOfflineConcurrent` uses `Di
 
 ## Mastering / quality
 
-### 18. Multiband compressor / linear-phase EQ / true-peak limiter ⚠ **PARTIAL**
-Safety limiter + ✅ `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64-sample look-ahead, ceiling in dBTP, instant attack / exponential release). Still pending: multiband compressor, linear-phase EQ (Hilbert FIR or FFT convolution).
+### 18. Multiband compressor / linear-phase EQ / true-peak limiter ✅ **SHIPPED**
+Safety limiter + `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64-sample look-ahead, ceiling in dBTP). `MultibandCompressor` (3-band Linkwitz-Riley). `LinearPhaseEQ` ships with a 4096-point overlap-save FFT convolution path now wired into the master chain via `RenderBlockWrapper.masterEQBlock`, gated by `EngineSharedState.isMasterEQEnabled`. 10 log-spaced bands (31 Hz – 16 kHz). Mastering-grade order: EQ → stereo widen → reverb → safety limiter.
 
 ### 19. Dithering on export ✅ **SHIPPED**
 `MasteringExport.applyDither(bufferL:bufferR:frames:bits:mode:)` in `ToooT_Plugins`. Rectangular and TPDF modes. Per-bit scaled amplitude (±½ LSB). Integrated into `AudioHost.exportAudio(to:state:options:)` via `ExportOptions`.
@@ -157,6 +157,12 @@ Safety limiter + ✅ `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64
 **Today:** `.mad` native only.
 **Pro DAWs:** AAF is the post-production interchange format; OMF is legacy but still common. Required to hand sessions to a film mix.
 **Fix:** Third-party AAFLib exists (LGPL — requires dynamic linking for MIT compatibility). ~1500 lines shim.
+
+### 21.5 Tempo + time-signature + marker automation ✅ **SHIPPED**
+Tempo lane writes through automation target `tempo.bpm` directly into `state.pointee.bpm` at every row boundary, clamped to [20, 999]. `TimingMap` carries markers (named beat positions, color-tagged) and time-signature changes (multiple `(beat, numerator, denominator)` entries with at-beat lookup). `PlaybackState.seekToMarker(named:)` jumps the playhead. Persistence via `.mad` `TOOO` chunk alongside scenes + plugin states. Mid-song time-signature changes are stored but not yet consumed by the render path (bar-boundary recalculation is the next step).
+
+### 21.6 Recording: take lanes + overdub + loop ⚠ **PARTIAL**
+Data layer ships: `RecordingTake` + `TakeLane` per channel + `RecordingMode { replace, overdub, loop }`. `AudioHost.commitTakeFromRecording` finalises the in-progress capture (`recordedSamplesL/R`) into the channel's stack honoring the mode (replace clears prior takes; overdub / loop append, latest-active). Codable for `.mad` persistence. Engine playback of layered active takes (mixing them into the channel output) is the remaining work — the existing single-shot startRecording / stopRecording flow stays operational.
 
 ### 23. Video sync ✅ **SHIPPED**
 `ToooT_UI/VideoSync.swift` defines `VideoSyncModel` (AVPlayer + project-time → video-time drift correction at >1-frame thresholds) and `VideoSyncView`, surfaced on the `.video` workbench tab. Outbound LTC/MTC and frame-accurate edit are not yet wired — the sync direction here is engine → video, not the reverse.
@@ -233,7 +239,7 @@ AppIntents shipped: `OpenToooTProjectIntent`, `OpenLastAutosaveIntent`, `NewTooo
 **Fix:** Port `OfflineDSP.resample` / `timeStretch` / `smooth` to Metal compute shaders where they beat vDSP on M-series (generally only for N > ~10k with many parallel operations).
 
 ### 39. Cold-launch time budget ⚠ **PARTIAL**
-Instrumented: `AudioHost.setup` wraps an outer `os_signpost` plus inner intervals on `EngineBoot`, `InternalDSPBoot`, `OutputUnitBoot`. `AUv3Host` has its own `scanLog`. Subsystem `com.apple.ProjectToooT` / category `ColdLaunch` for filtering. Actual measurement under Instruments + optimization (async plugin scan, deferred DSP compilation, lazy instrument bank allocation) hasn't been done yet — that's the remaining work.
+Instrumented: `AudioHost.setup` wraps an outer `os_signpost` plus inner intervals on `EngineBoot`, `InternalDSPBoot`, `OutputUnitBoot`, plus `AudioHost.SetupTimings` exposes wall-clock per phase. `AUv3Host` has its own `scanLog`. Measured (UAT 57) on M-series: engine + DSP boot ~70 ms steady-state. **Optimization shipped:** `AUv3HostManager` no longer auto-scans; `Timeline` kicks off `discoverPluginsAsync()` on a detached utility Task, removing the 1–3 s cold AVAudioUnitComponentManager scan from the main thread. Full app cold launch (UI mount + first frame) still needs an Instruments profiling pass.
 
 ---
 

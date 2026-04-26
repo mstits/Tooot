@@ -7,6 +7,51 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Master linear-phase EQ in the master chain** — `LinearPhaseEQ`'s
+  4096-point overlap-save FFT convolution is now instantiated by
+  `AudioHost` and wired into `RenderBlockWrapper.masterEQBlock`. 10
+  log-spaced bands (31 Hz – 16 kHz). `AudioHost.setMasterEQBand(_:dB:)`
+  + `EngineSharedState.isMasterEQEnabled` for runtime control. Master
+  chain order: EQ → stereo widen → reverb → safety limiter.
+- **AUv3 plugin parameter automation** — `AudioHost.pluginParamRegistry`
+  walks each loaded plugin's `parameterTree` and registers parameters
+  under target IDs `plugin.<channel>.<slot>.<address>` (channel
+  inserts), `plugin.<channel>.inst.<address>` (channel instruments),
+  `plugin.bus.<bus>.<slot>.<address>` (bus inserts).
+  `Timeline.syncEngineToUI` evaluates plugin-targeted automation lanes
+  at UI tick rate and writes through `AUParameter.setValue`. Native
+  engine params stay on the audio thread; plugin params live at UI
+  rate where setValue is documented thread-safe.
+- **Tempo automation** — new target ID `tempo.bpm` is honored by the
+  audio thread's `applyTarget`. Lanes write directly to
+  `state.pointee.bpm` at row boundaries, clamped to [20, 999].
+- **Markers + time signatures** — `Marker` + `TimeSignatureChange` +
+  `TimingMap` ship in `ToooT_Core`. `PlaybackState.timingMap` carries
+  named cue points and a list of meter changes; `seekToMarker(named:)`
+  jumps the playhead. Persisted in the `.mad` `TOOO` chunk via
+  `exportAsPluginStateData`. Mid-song meter consumption by the render
+  path is a follow-up.
+- **Recording take lanes** — `RecordingTake` + `TakeLane` per channel,
+  `RecordingMode { replace, overdub, loop }`. `commitTakeFromRecording`
+  finalises the in-progress capture into the configured channel's
+  stack honoring the mode. Replace clears prior takes; overdub / loop
+  append latest-active. Codable for `.mad` persistence.
+- **Arrangement engine consumption** — `SongSnapshot.arrangement`
+  ships as an optional reference. When non-nil,
+  `processTickSequencer`'s per-channel event lookup overrides the
+  order-list path: a pattern clip on a track at `channelIndex N`
+  routes the engine to play that pattern's events for channel N.
+  Pattern-grid playback is the fallback when no clip is active. Honors
+  track mute / solo. UAT 61 verifies. Pressing play on a populated
+  ArrangementView now actually produces audible output. Audio (.audio)
+  and MIDI (.midi) clip kinds are still pending.
+- **Cold-launch profiling instrumentation** — `AudioHost.SetupTimings`
+  exposes wall-clock per phase (engineBoot / internalDSPBoot /
+  outputUnitBoot). UAT 57 measures and asserts < 250 ms steady-state.
+  `AUv3HostManager` no longer auto-scans on init; Timeline kicks off
+  `discoverPluginsAsync()` on a detached utility Task, removing the
+  1–3 s `AVAudioUnitComponentManager` scan from cold launch's main
+  thread.
 - **AppIntents (Shortcuts.app)** — `OpenToooTProjectIntent` (file →
   open in app), `OpenLastAutosaveIntent`, `NewToooTProjectIntent`,
   plus `ToooTShortcutsProvider` so the intents surface in Spotlight
