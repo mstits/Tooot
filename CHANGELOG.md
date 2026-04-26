@@ -7,6 +7,44 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- **Spatial Audio editor — proper top-down view** — replaces the previous
+  Metal mesh-shader pipeline (which silently failed on base M1 hardware
+  and rendered as a black screen everywhere else due to clearColor.alpha
+  = 0). New `MetalSpatialView` is pure SwiftUI Canvas: listener glyph
+  with nose-pointing-front, concentric distance rings (1 / 2 / 4 / 8 m),
+  cardinal Front/Back/L/R labels, 16 colored channel dots distributed
+  at 2 m default radius (so first-launch users see content immediately
+  instead of every dot piled at origin), drag-to-reposition, hover
+  readout: "Ch N · x ?.? m  z ?.? m · vol ??%". Works on every
+  macOS-supported GPU.
+- **Three-pane Automation editor** — replaces the single-line legacy
+  view. Sidebar lists every available target (master volume, tempo BPM,
+  per-channel volume + pan for the first 8 channels, per-bus volume —
+  plugin params auto-appendable) with a status dot per active lane and
+  point counts. Gridded canvas with bar lines (every 4th brighter at
+  bar boundaries), value markers at 25 / 50 / 75 %, edge labels, curve
+  fills, selected-point ring, empty-state hint. Inspector strip below
+  shows TIME / VALUE / INDEX of the selected point + Linear / S-Curve
+  picker + Delete. Header has Clear-lane and +Point-at-midpoint
+  shortcuts. Click empty space to insert; drag to move; click a point
+  to select.
+- **Generative panel rebuild** — was 4 buttons on a 1100-character line.
+  Now a proper editor: 8 generators (Markov Melody / Euclidean Beat /
+  L-System Arp / Harmony Layer / Bassline / Drum Pattern / Chord
+  Progression / Variation), style picker (Techno / DnB / Ambient /
+  Hip-Hop / Jazz / Breakbeat), 12 chromatic keys, 8 scales, intensity
+  + complexity sliders with % readouts, target channel picker,
+  variation count stepper. Generators actually use the controls —
+  Bassline picks degrees from selected scale + key, Drum Pattern has
+  style-specific layouts, Chord Prog plays I–V–vi–IV in the selected
+  key. Status messages report what was generated ("Bassline in C
+  minor", "Techno drum pattern").
+- **UX polish** — welcome screen rewrite (drop "Mac Tracker for the
+  Post-Human Era", add ⌘N / ⌘O / ⌘K / Space / ⌘. / ⌘Z keyboard
+  shortcut card, drag-and-drop hint), HUD status with translucent
+  material card + smooth slide-in/out animation, transport tooltips
+  (Space / ⌘. / BPM / TPR), `showStatus` lifetime bumped 3 s → 5 s so
+  users actually see messages.
 - **Master linear-phase EQ in the master chain** — `LinearPhaseEQ`'s
   4096-point overlap-save FFT convolution is now instantiated by
   `AudioHost` and wired into `RenderBlockWrapper.masterEQBlock`. 10
@@ -136,6 +174,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   automation, MAD QL/Spotlight primitives, and macOS Native
   Integration sections; updated test count (100+ → 230+); removed
   broken CI badge; linked the new docs.
+
+### Changed
+- **Synthesis tier names** — pretentious sci-fi labels replaced with
+  descriptive musical ones, with inline descriptions per choice:
+  - `Carbon` → **Studio** (clean, precise, tracker-classic)
+  - `Biological` → **Organic** (humanized timing, natural vibrato)
+  - `Xenomorph` → **Generative** (stochastic / glitchy / experimental)
+  PlaybackState fields renamed in lockstep:
+  `carbonCorruption` → `studioCorruption`, `carbonGlitchRate` →
+  `studioGlitchRate`, `bioArrhythmiaRate` → `organicTimingDrift`,
+  `bioBreathiness` → `organicBreathiness`, `xenoFractalDim` →
+  `generativeFractalDim`, `xenoVoidThreshold` →
+  `generativeVoidThreshold`.
 
 ### Internal
 - Cleaned all build warnings to zero: redundant `public` on

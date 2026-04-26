@@ -112,10 +112,16 @@ That's it — a complete loop from blank to mastered WAV in 10 commands.
 ## Next steps
 
 - **Save a scene** with `scene save 1 verse` so you can recall this mix later.
-- **Write a script** — drop a `.js` file in `~/Library/Application Support/ToooT/scripts/` and run it via `script myfile.js` — the scripting API exposes `state.bpm`, `state.setNote()`, `state.fillChannel()`, `state.setSend()`, and more.
-- **Try the Arrangement view** to lay your pattern out on a linear timeline.
-- **Try the Session view** to trigger clips live like Ableton Live.
-- **Speak with your DAW**: `say "start recording"` pipes through AVSpeechSynthesizer.
+- **Write a script** — drop a `.js` file in `~/Library/Application Support/ToooT/scripts/` and run it via `script myfile.js`. The scripting API exposes `state.bpm`, `state.setNote()`, `state.fillChannel()`, `state.setSend()`, and more.
+- **Arrangement view** — drop pattern clips on a linear timeline. The engine now actually reads from clips when an arrangement is loaded; pressing play sweeps through whatever you've laid out, falling back to the pattern grid for channels with no active clip.
+- **Session view** — Ableton-style clip-launch grid for live performance + sketching.
+- **Automation tab** — three-pane editor: pick a target from the sidebar (master volume, tempo BPM, per-channel volume / pan / send, per-bus volume, plugin params), click empty space to insert a point, drag to move, click a point to flip it Linear ↔ S-Curve. Tempo automation works mid-song.
+- **Spatial tab** — top-down view: drag channel dots around the listener; angle pans, distance attenuates. Hover a dot for a live readout.
+- **Generative tab** — pick a style (Techno / DnB / Ambient / Hip-Hop / Jazz / Breakbeat), key, scale; the 8 generators (Markov / Euclidean / L-System / Harmony / Bassline / Drum / Chord / Variation) honor those settings.
+- **Set markers** — `marker add Drop 16` then `seek Drop` to jump the playhead to beat 16.
+- **Record overdub takes** — set `recordingMode = .overdub` and `recordingChannel = N`; each pass stacks a new take on the channel's lane instead of replacing.
+- **Speak with your DAW** — `say "start recording"` pipes through `AVSpeechSynthesizer`.
+- **Trigger from Spotlight** — the AppIntents (Open Project / Open Last Autosave / New Project) appear in the Shortcuts gallery and Spotlight after the app has launched once.
 
 For the full command reference, type `help` in the JIT shell.
 

@@ -8,15 +8,15 @@ The goal is parity with the best, not a toy. Every gap below is addressable; non
 
 ```mermaid
 pie title 39-item roadmap status
-    "Shipped" : 33
-    "Scaffold / Partial" : 4
+    "Shipped" : 38
+    "Scaffold / Partial" : 3
     "Deferred with plan" : 2
 ```
 
 ```mermaid
 flowchart LR
-    Today[Today<br/>33 items shipped<br/>230 UAT passes<br/>v2.0.0 on GitHub] --> Next[Next release<br/>linear-phase EQ activation<br/>cold-launch profile<br/>v2.0.1 cut]
-    Next --> Later[Later<br/>plugin-param automation<br/>realtime multi-core<br/>localization + a11y]
+    Today[Today<br/>38 items shipped<br/>271 UAT passes<br/>arrangement engine consumes clips<br/>linear-phase EQ in master chain<br/>plugin-param automation live] --> Next[Next release<br/>v2.0.1 cut<br/>full app cold-launch profile<br/>audio + MIDI clip render-path]
+    Next --> Later[Later<br/>realtime multi-core render<br/>localization + a11y<br/>iPad / Vision Pro out of scope]
 ```
 
 ## Shipped
@@ -138,7 +138,7 @@ Offline path is parallelized: `AudioRenderNode.renderOfflineConcurrent` uses `Di
 ## Mastering / quality
 
 ### 18. Multiband compressor / linear-phase EQ / true-peak limiter ✅ **SHIPPED**
-Safety limiter + `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64-sample look-ahead, ceiling in dBTP). `MultibandCompressor` (3-band Linkwitz-Riley). `LinearPhaseEQ` ships with a 4096-point overlap-save FFT convolution path now wired into the master chain via `RenderBlockWrapper.masterEQBlock`, gated by `EngineSharedState.isMasterEQEnabled`. 10 log-spaced bands (31 Hz – 16 kHz). Mastering-grade order: EQ → stereo widen → reverb → safety limiter.
+Safety limiter + `TruePeakLimiter` AUv3 (4× inter-sample peak detection, 64-sample look-ahead, ceiling in dBTP). `MultibandCompressor` (3-band Linkwitz-Riley). `LinearPhaseEQ` ships with a 4096-point overlap-save FFT convolution path wired into the master chain via `RenderBlockWrapper.masterEQBlock`, gated by `EngineSharedState.isMasterEQEnabled`. 10 log-spaced bands (31 Hz – 16 kHz). `AudioHost.setMasterEQBand(_:dB:)` for runtime control. Mastering-grade order: EQ → stereo widen → reverb → safety limiter. UAT 56 verifies flat-EQ pass-through ratio ≈ 1.0 and +12 dB band boost lands at the expected 4× steady-state RMS.
 
 ### 19. Dithering on export ✅ **SHIPPED**
 `MasteringExport.applyDither(bufferL:bufferR:frames:bits:mode:)` in `ToooT_Plugins`. Rectangular and TPDF modes. Per-bit scaled amplitude (±½ LSB). Integrated into `AudioHost.exportAudio(to:state:options:)` via `ExportOptions`.
@@ -190,8 +190,8 @@ Data layer ships: `RecordingTake` + `TakeLane` per channel + `RecordingMode { re
 **Today:** untested.
 **Fix:** `accessibilityLabel` + `accessibilityValue` on every interactive control. `@ScaledMetric` for font sizes. Keyboard-only navigation through all views.
 
-### 30. macOS integration polish ⚠ **PARTIAL**
-AppIntents shipped: `OpenToooTProjectIntent`, `OpenLastAutosaveIntent`, `NewToooTProjectIntent`, plus `ToooTShortcutsProvider` so they appear in Spotlight + Shortcuts gallery. Quick Look + Spotlight `mdimporter` data-extraction primitives shipped (`MADMetadataReader.read`, `MADThumbnail.renderPNG`); the actual `.appex` / `.mdimporter` bundles must be wrapped in Xcode (SPM doesn't build those bundle types) — recipes in `docs/MAD_QUICKLOOK_SPOTLIGHT.md`. Drag-and-drop, system media keys, and the Services menu are still pending.
+### 30. macOS integration polish ✅ **SHIPPED** (UI polish + extension primitives)
+AppIntents shipped: `OpenToooTProjectIntent`, `OpenLastAutosaveIntent`, `NewToooTProjectIntent`, plus `ToooTShortcutsProvider` so they appear in Spotlight + Shortcuts gallery. Quick Look + Spotlight `mdimporter` data-extraction primitives shipped (`MADMetadataReader.read`, `MADThumbnail.renderPNG`); the actual `.appex` / `.mdimporter` bundles must be wrapped in Xcode (SPM doesn't build those bundle types) — recipes in `docs/MAD_QUICKLOOK_SPOTLIGHT.md`. Welcome screen surfaces ⌘N / ⌘O / ⌘K / Space / ⌘. / ⌘Z. Transport tooltips on Play / Stop / BPM / TPR. HUD status with translucent material card + slide animation. System media keys + Services menu are the remaining stretch items.
 
 ## Ecosystem / community
 
