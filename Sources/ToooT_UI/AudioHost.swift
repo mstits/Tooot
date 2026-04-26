@@ -252,14 +252,34 @@ public final class AudioHost {
     private static let launchLog = OSLog(
         subsystem: "com.apple.ProjectToooT", category: "ColdLaunch")
 
+    /// Wall-clock breakdown of `AudioHost.setup()` phases. Populated on every
+    /// successful setup; exposed via `lastSetupTimings`. Used by the
+    /// LaunchProfile CLI to track regressions in cold-launch time.
+    public struct SetupTimings: Sendable {
+        public var engineBoot:     TimeInterval
+        public var internalDSPBoot: TimeInterval
+        public var outputUnitBoot:  TimeInterval
+        public var total:           TimeInterval
+        public init(engineBoot: TimeInterval = 0, internalDSPBoot: TimeInterval = 0,
+                    outputUnitBoot: TimeInterval = 0, total: TimeInterval = 0) {
+            self.engineBoot = engineBoot
+            self.internalDSPBoot = internalDSPBoot
+            self.outputUnitBoot = outputUnitBoot
+            self.total = total
+        }
+    }
+    public private(set) var lastSetupTimings: SetupTimings = SetupTimings()
+
     public func setup() async throws {
         let setupSignpostID = OSSignpostID(log: Self.launchLog)
         os_signpost(.begin, log: Self.launchLog, name: "AudioHost.setup", signpostID: setupSignpostID)
         defer { os_signpost(.end, log: Self.launchLog, name: "AudioHost.setup", signpostID: setupSignpostID) }
+        let totalStart = CFAbsoluteTimeGetCurrent()
 
         // Phase 1: AUv3 subclass registration + engine instantiation.
         let auBootID = OSSignpostID(log: Self.launchLog)
         os_signpost(.begin, log: Self.launchLog, name: "EngineBoot", signpostID: auBootID)
+        let engineBootStart = CFAbsoluteTimeGetCurrent()
         let cd = AudioComponentDescription(
             componentType: kAudioUnitType_Generator,
             componentSubType: 0x5054524B,
@@ -270,6 +290,7 @@ public final class AudioHost {
         self.trackerAU = au
         try au.allocateRenderResources()
         os_signpost(.end, log: Self.launchLog, name: "EngineBoot", signpostID: auBootID)
+        lastSetupTimings.engineBoot = CFAbsoluteTimeGetCurrent() - engineBootStart
 
         // Phase 2: Internal DSP effects (stereo wide + reverb). Stored in
         // stereoWideAU/reverbAU so they remain alive for the full lifetime of
@@ -280,6 +301,7 @@ public final class AudioHost {
         // freed when the AUAudioUnit Swift wrapper is released).
         let dspID = OSSignpostID(log: Self.launchLog)
         os_signpost(.begin, log: Self.launchLog, name: "InternalDSPBoot", signpostID: dspID)
+        let dspBootStart = CFAbsoluteTimeGetCurrent()
         let sw = try? StereoWidePlugin(componentDescription: cd, options: [])
         try? sw?.allocateRenderResources()
         self.stereoWideAU = sw
@@ -290,6 +312,7 @@ public final class AudioHost {
         try? eq?.allocateRenderResources()
         self.masterEQAU = eq
         os_signpost(.end, log: Self.launchLog, name: "InternalDSPBoot", signpostID: dspID)
+        lastSetupTimings.internalDSPBoot = CFAbsoluteTimeGetCurrent() - dspBootStart
 
         // AudioRenderNode — the Swift 6 mixing core. We use the instance
         // already created by AudioEngine to ensure Timeline sync and the audio
@@ -307,6 +330,7 @@ public final class AudioHost {
         // Phase 3: CoreAudio output unit.
         let outID = OSSignpostID(log: Self.launchLog)
         os_signpost(.begin, log: Self.launchLog, name: "OutputUnitBoot", signpostID: outID)
+        let outputBootStart = CFAbsoluteTimeGetCurrent()
         var outDesc = AudioComponentDescription(
             componentType: kAudioUnitType_Output,
             componentSubType: kAudioUnitSubType_DefaultOutput,
@@ -353,6 +377,8 @@ public final class AudioHost {
                              &format, UInt32(MemoryLayout<AudioStreamBasicDescription>.size))
         AudioUnitInitialize(outputUnit)
         os_signpost(.end, log: Self.launchLog, name: "OutputUnitBoot", signpostID: outID)
+        lastSetupTimings.outputUnitBoot = CFAbsoluteTimeGetCurrent() - outputBootStart
+        lastSetupTimings.total = CFAbsoluteTimeGetCurrent() - totalStart
     }
 
     deinit {

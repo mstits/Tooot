@@ -1301,6 +1301,54 @@ autoreleasepool {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 57. Cold-launch phase wall-clock — measure engine + DSP boot
+// ─────────────────────────────────────────────────────────────────────────────
+// Times the two engine init phases that don't need CoreAudio output. This is
+// the "headless" subset of cold launch — not the full picture, but enough to
+// flag regressions in the most common bottleneck (AUv3 instantiation).
+print("\n── 57. Cold-launch phases ──────────────────────────────────────────")
+@MainActor
+func measureColdLaunch() {
+    let cd = AudioComponentDescription(
+        componentType: kAudioUnitType_Generator,
+        componentSubType: 0x5054524B,
+        componentManufacturer: 0x4D414444,
+        componentFlags: 0, componentFlagsMask: 0)
+    AUAudioUnit.registerSubclass(AudioEngine.self, as: cd, name: "ToooT-Probe", version: 1)
+
+    var engineMS = 0.0, dspMS = 0.0
+    let iters = 3
+    for i in 0..<iters {
+        let t0 = CFAbsoluteTimeGetCurrent()
+        guard let au = try? AudioEngine(componentDescription: cd, options: [], sampleRate: 44100) else {
+            assert(false, "AudioEngine instantiation succeeds"); return
+        }
+        try? au.allocateRenderResources()
+        let t1 = CFAbsoluteTimeGetCurrent()
+        let _ = try? StereoWidePlugin(componentDescription: cd, options: [])
+        let _ = try? ReverbPlugin(componentDescription: cd, options: [])
+        let _ = try? LinearPhaseEQ(componentDescription: cd, options: [])
+        let t2 = CFAbsoluteTimeGetCurrent()
+        let e = (t1 - t0) * 1000
+        let d = (t2 - t1) * 1000
+        print(String(format: "  iter %d  engine=%6.2fms  dsp=%6.2fms", i, e, d))
+        if i > 0 { engineMS += e; dspMS += d }
+    }
+    let n = Double(iters - 1)
+    let avgEngine = engineMS / n
+    let avgDSP    = dspMS / n
+    print(String(format: "  avg(post1) engine=%.2fms  dsp=%.2fms  combined=%.2fms",
+                 avgEngine, avgDSP, avgEngine + avgDSP))
+    // Soft regression bound: if the engine + DSP boot ever crosses 250 ms on
+    // post-warm-up steady state, something is wrong. Local M-series should be
+    // single-digit ms. CI/cold-cache rooms can be slower; the bound is
+    // generous so this never flakes.
+    assert(avgEngine + avgDSP < 250,
+           "Cold-launch engine + DSP within 250ms post-warmup (got \(avgEngine + avgDSP)ms)")
+}
+MainActor.assumeIsolated { measureColdLaunch() }
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 56. Linear-phase EQ — kernel build + render-block contract
 // ─────────────────────────────────────────────────────────────────────────────
 print("\n── 56. Linear-Phase EQ Activation ──────────────────────────────────")

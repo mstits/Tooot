@@ -48,6 +48,14 @@ public final class Timeline {
         self.audioEngine = engine
         self.renderNode  = renderNode
 
+        // Kick AUv3 plugin discovery off the main thread. The scan can take
+        // 1–3 s on a cold AVAudioUnitComponentManager cache; doing it lazily
+        // here means cold launch isn't blocked. UI sees an empty plugin list
+        // for a moment, then populated once the Task finishes.
+        Task.detached(priority: .utility) { [hostManager] in
+            await hostManager.discoverPluginsAsync()
+        }
+
         // UI state throttling: Pipeline published engine metrics through Combine throttle
         timerContainer.cancellable = Timer.publish(every: 0.016, on: .main, in: .common)
             .autoconnect()
